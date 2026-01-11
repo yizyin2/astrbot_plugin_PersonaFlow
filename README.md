@@ -30,7 +30,7 @@
 | `personas_name` | String | `""` | **(必填)** 需要启用记忆功能的**人格ID**（System Prompt ID）。插件将基于此人格生成动态版本。 |
 | `summary_trigger_threshold` | Int | `5` | **触发阈值**。用户每进行多少次对话后，触发一次印象总结。 |
 | `summary_history_count` | Int | `20` | **历史回溯**。触发总结时，读取最近多少条聊天记录发给 LLM 进行分析。 |
-| `apply_to_group_chat` | List | `[]` | **生效群组**。(必填)填入群号列表。生效的群聊。 |
+| `apply_to_group_chat` | List | `[]` | **生效群组**。填入群号列表。如果为空 `[]`，则默认对所有群聊/私聊生效（取决于插件加载逻辑）。 |
 | `database_path` | String | `./data/OSNpermemory.db` | 插件专用数据库的存储路径。 |
 | `summary_max_retries` | Int | `3` | LLM 总结失败时的最大重试次数。 |
 
@@ -43,7 +43,7 @@
 1.  找到你在 人格设定`personas_id` 中配置的人格。
 2.  编辑该人格的 System Prompt（系统提示词）。
 3.  在合适的位置加入 `{Impression}`。
-4.  修改本插件的插件配置，填写`生效的人格设定(system prompt)`,例如：`小周周`。填写生效群聊,例如：`12345678`
+4.  修改本插件的插件配置，填写`生效的人格设定(system prompt)`,例：`小周周`。填写生效群聊：`12345678`
 
 ### 示例 System Prompt：
 
@@ -67,7 +67,7 @@
 1.  **数据库**：插件会自动创建 `./data/OSNpermemory.db`，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
 2.  **数据隔离**：插件读取 AstrBot 主数据库 (`data_v4.db`) 获取原始人格模板，生成的动态人格存储在插件自己的数据库中，并通过 Hook 机制在运行时替换，**安全无副作用**。
 3.  **Hook 机制**：
-    *   `on_llm_request`: 拦截请求，通过`req.system_prompt`函数将带有印象的动态 System Prompt 注入模型。
+    *   `on_llm_request`: 拦截请求，将带有印象的动态 System Prompt 注入模型。
     *   `on_llm_response`: 记录对话，触发总结逻辑。
 
 ## 📝 版本历史
@@ -76,6 +76,7 @@
     *   使用 Ruff 格式化代码。
     *   优化数据库操作，增加动态人格表。
     *   修复总结逻辑和 JSON 解析。
+    **v0.5.1(Beta)**
     *   增加总结关系llm的重试
 
 ## 👨‍💻 作者
