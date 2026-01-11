@@ -3,7 +3,7 @@
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-violet)](https://github.com/Soulter/AstrBot)
 [![Version](https://img.shields.io/badge/version-0.5.2(Beta)-blue)](https://github.com/Soulter/AstrBot)
 
-**PersonaFlow** 是一个为 [AstrBot](https://github.com/Soulter/AstrBot) 设计的高级记忆插件。它通过 AI 自动总结用户与 Bot 之间的对话历史，生成动态的人物关系和印象，并将其注入到模型的人格设定中。
+**PersonaFlow** 是一个为 [AstrBot](https://github.com/Soulter/AstrBot) 设计的记忆插件。它通过 AI 自动总结用户与 Bot 之间的对话历史，生成动态的人物关系和印象，并将其注入到模型的人格设定中。
 
 这意味着 Bot 能够“记住”每一个与它聊过天的人，知晓他们之间的关系（如朋友、死党、师生）以及对该用户的具体印象（如傲娇、博学、幽默），并在不同的群聊或会话中保持这种记忆。
 
@@ -17,9 +17,9 @@
 
 ## 📦 安装方法
 
-1.  将本项目文件夹（或单文件）放置在 AstrBot 的 `plugins/` 目录下。
-2.  或者使用 AstrBot 的插件管理器进行安装（如果有）。
-3.  重启 AstrBot。
+1.  将`astrbot_plugin_infinite_dialogue`文件夹放置在 AstrBot 的`data/plugins/`目录下。
+2.  重启AstrBot。
+3.  在控制台或 WebUI 中启用插件。
 
 ## ⚙️ 配置说明 (Configuration)
 
@@ -65,18 +65,30 @@
 ## 🛠️ 技术细节
 
 1.  **数据库**：插件会自动创建 `./data/OSNpermemory.db`，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
-2.  **数据隔离**：插件读取 AstrBot 主数据库 (`data_v4.db`) 获取原始人格模板，生成的动态人格存储在插件自己的数据库中，并通过 Hook 机制在运行时替换，**安全无副作用**。
+2. **数据流向**：
+* **读**：通过 `self.context.provider_manager.personas` 直接从 AstrBot 内存中读取基础人格模板（安全、快速）。
+* **写**：用户印象存储在独立的 `./data/OSNpermemory.db` 中，不污染 AstrBot 核心数据 (`data_v4.db`)。
 3.  **Hook 机制**：
     *   `on_llm_request`: 拦截请求，将带有印象的动态 System Prompt 注入模型。
     *   `on_llm_response`: 记录对话，触发总结逻辑。
+4. **并发安全**：
+* 使用 `asyncio.Lock` 保证数据库写入操作的原子性，防止竞争条件。
+* 数据库开启 `WAL (Write-Ahead Logging)` 模式，显著提升并发读写性能。
 
 ## 📝 版本历史
+* **v0.6 (Beta)**
+* **重构**：迁移至 `aiosqlite`，实现全异步数据库操作。
+* **优化**：改为从 `provider_manager` 内存读取人格模板，修复文件锁冲突问题。
+* **性能**：增加 System Prompt 内存缓存与数据库 WAL 模式。
+
 
 *   **v0.5.2(Beta)**:
     *   使用 Ruff 格式化代码。
     *   优化数据库操作，增加动态人格表。
     *   修复总结逻辑和 JSON 解析。
-    **v0.5.1(Beta)**
+
+
+*   **v0.5.1(Beta)**
     *   增加总结关系llm的重试
 
 ## 👨‍💻 作者
@@ -85,5 +97,6 @@
 *   **Original Repo**: [AstrBot](https://github.com/Soulter/AstrBot)
 
 ## 📄 License
+
 
 MIT License
