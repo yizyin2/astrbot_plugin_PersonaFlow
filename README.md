@@ -67,7 +67,7 @@
 1.  **数据库**：插件会自动创建 `./data/OSNpermemory.db`，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
 2.  **数据隔离**：插件读取 AstrBot 主数据库 (`data_v4.db`) 获取原始人格模板，生成的动态人格存储在插件自己的数据库中，并通过 Hook 机制在运行时替换，**安全无副作用**。
 3.  **Hook 机制**：
-    *   `on_llm_request`: 拦截请求，将带有印象的动态 System Prompt 注入模型。
+    *   `on_llm_request`: 拦截请求，通过`req.system_prompt`函数将带有印象的动态 System Prompt 注入模型。
     *   `on_llm_response`: 记录对话，触发总结逻辑。
 
 ## 📝 版本历史
@@ -76,7 +76,6 @@
     *   使用 Ruff 格式化代码。
     *   优化数据库操作，增加动态人格表。
     *   修复总结逻辑和 JSON 解析。
-    **v0.5.1(Beta)**
     *   增加总结关系llm的重试
 
 ## 👨‍💻 作者
