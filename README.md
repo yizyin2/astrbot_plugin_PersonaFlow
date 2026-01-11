@@ -30,7 +30,7 @@
 | `personas_name` | String | `""` | **(必填)** 需要启用记忆功能的**人格ID**（System Prompt ID）。插件将基于此人格生成动态版本。 |
 | `summary_trigger_threshold` | Int | `5` | **触发阈值**。用户每进行多少次对话后，触发一次印象总结。 |
 | `summary_history_count` | Int | `20` | **历史回溯**。触发总结时，读取最近多少条聊天记录发给 LLM 进行分析。 |
-| `apply_to_group_chat` | List | `[]` | **生效群组**。填入群号列表。如果为空 `[]`，则默认对所有群聊/私聊生效（取决于插件加载逻辑）。 |
+| `apply_to_group_chat` | List | `[]` | **生效群组**。(必填)填入群号列表。生效的群聊。 |
 | `database_path` | String | `./data/OSNpermemory.db` | 插件专用数据库的存储路径。 |
 | `summary_max_retries` | Int | `3` | LLM 总结失败时的最大重试次数。 |
 
