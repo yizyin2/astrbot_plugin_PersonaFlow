@@ -1,6 +1,5 @@
-name: astrbot_plugin_PersonaFlow
-display_name: 人格关系流
-desc: 由ai自动总结人物关系到数据库，实现ai自主更新人格设定(system prompt)。
-version: v0.5.2(Beta)
-author: yizyin
-repo: https://github.com/yizyin2/astrbot_plugin_PersonaFlow# 插件的仓库地址
+"name": "astrbot_plugin_PersonaFlow"
+"display_name": "人格关系流"
+"desc": "由ai总结人物关系到数据库，实现ai自主更新人格设定"
+"author": "yzyin"
+"repo": "https://github.com/yizyin2/astrbot_plugin_PersonaFlow"

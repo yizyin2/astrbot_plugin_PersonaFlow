@@ -1,7 +1,7 @@
 # AstrBot Plugin: PersonaFlow (人格关系流)
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-violet)](https://github.com/Soulter/AstrBot)
-[![Version](https://img.shields.io/badge/version-0.5.2-blue)](https://github.com/Soulter/AstrBot)
+[![Version](https://img.shields.io/badge/version-0.5.2(Beta)-blue)](https://github.com/Soulter/AstrBot)
 
 **PersonaFlow** 是一个为 [AstrBot](https://github.com/Soulter/AstrBot) 设计的高级记忆插件。它通过 AI 自动总结用户与 Bot 之间的对话历史，生成动态的人物关系和印象，并将其注入到模型的人格设定中。
 
