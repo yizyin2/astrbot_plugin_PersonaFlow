@@ -31,8 +31,8 @@ class PersonaFlow(Star):
         self.config = config
         self.db_path = self.config.get("database_path", "./data/OSNpermemory.db")
         self.db = None  # 数据库连接对象初始化为None
-        self._db_lock = asyncio.Lock() # 1. 添加锁解决并发初始化问题
-        self.cached_dynamic_prompt = None # 2. 添加内存缓存，避免每次对话读库
+        self._db_lock = asyncio.Lock()  # 1. 添加锁解决并发初始化问题
+        self.cached_dynamic_prompt = None  # 2. 添加内存缓存，避免每次对话读库
 
         # 4. 确保目录存在
         db_dir = os.path.dirname(self.db_path)
@@ -45,10 +45,12 @@ class PersonaFlow(Star):
     async def _get_db(self):
         """懒加载获取数据库连接"""
         if self.db is None:
-            async with self._db_lock: # 双重检查锁定
+            async with self._db_lock:  # 双重检查锁定
                 if self.db is None:
                     try:
-                        self.db = await aiosqlite.connect(self.db_path, check_same_thread=False)
+                        self.db = await aiosqlite.connect(
+                            self.db_path, check_same_thread=False
+                        )
                         # 开启 WAL 模式以获得更好的并发性能
                         await self.db.execute("PRAGMA journal_mode=WAL;")
                         await self._init_tables(self.db)
@@ -100,11 +102,10 @@ class PersonaFlow(Star):
             logger.error(f"建表失败: {e}")
             await db.rollback()
 
-
     async def insert_user(self, qq_number, user_name):
         """插入用户信息到数据库"""
         db = await self._get_db()
-        async with self._db_lock: # 写操作加锁
+        async with self._db_lock:  # 写操作加锁
             try:
                 sql = "INSERT INTO Impression (qq_number, name) VALUES (?, ?)"
                 await db.execute(sql, (qq_number, user_name))
@@ -138,7 +139,9 @@ class PersonaFlow(Star):
                 logger.error(f"更新对话次数失败: {e}")
                 await db.rollback()
 
-    async def set_sql_relationship_impression(self, qq_number, relationship, impression):
+    async def set_sql_relationship_impression(
+        self, qq_number, relationship, impression
+    ):
         """更新关系与印象"""
         db = await self._get_db()
         async with self._db_lock:
@@ -158,7 +161,6 @@ class PersonaFlow(Star):
             # 1. 查询需要的四个字段
             sql = "SELECT qq_number, name, relationship, impression FROM Impression"
             async with db.execute(sql) as cursor:
-
                 # 2. 获取所有结果 (fetchall)
                 results = await cursor.fetchall()
 
@@ -189,7 +191,6 @@ class PersonaFlow(Star):
         except Exception as e:
             logger.error(f"获取全部关系与印象失败: {e}")
             return "获取关系数据出错。"
-
 
     async def add_persona_chat_history(self, qq_number, message):
         """添加用户的聊天记录到数据库"""
@@ -251,11 +252,15 @@ class PersonaFlow(Star):
     # ************ 事件处理函数 **********
 
     @filter.on_llm_request()
-    async def inject_dynamic_persona(self, event: AstrMessageEvent, req: ProviderRequest):
-        current_session_id = str(event.get_session_id()) # 6. 强转字符串
+    async def inject_dynamic_persona(
+        self, event: AstrMessageEvent, req: ProviderRequest
+    ):
+        current_session_id = str(event.get_session_id())  # 6. 强转字符串
 
         # 6. 配置项强转字符串进行比对
-        active_session_ids = [str(x) for x in self.config.get("apply_to_group_chat", [])]
+        active_session_ids = [
+            str(x) for x in self.config.get("apply_to_group_chat", [])
+        ]
 
         if not active_session_ids or current_session_id in active_session_ids:
             # 获取配置文件中的基础人格ID
@@ -275,7 +280,7 @@ class PersonaFlow(Star):
             # logger.info(f"使用的system prompt:{dynamic_prompt}")
 
             if dynamic_prompt:
-                self.cached_dynamic_prompt = dynamic_prompt # 更新缓存
+                self.cached_dynamic_prompt = dynamic_prompt  # 更新缓存
                 req.system_prompt = dynamic_prompt
                 # logger.debug(f"已应用动态人格: {target_dynamic_id}")
             else:
@@ -288,7 +293,9 @@ class PersonaFlow(Star):
         current_session_id = str(event.get_session_id())
 
         # 获取json会话id
-        active_session_ids = [str(x) for x in self.config.get("apply_to_group_chat", [])]
+        active_session_ids = [
+            str(x) for x in self.config.get("apply_to_group_chat", [])
+        ]
 
         # logger.info(f"json会话id:{active_session_id}")
 
@@ -351,22 +358,37 @@ class PersonaFlow(Star):
             # logger.info(f"json_persona_id：{json_persona_id}")
             # 总结触发逻辑
             try:
-                summary_trigger_threshold = self.config.get("summary_trigger_threshold", 5)
+                summary_trigger_threshold = self.config.get(
+                    "summary_trigger_threshold", 5
+                )
                 qq_number = event.get_sender_id()
                 dialogue_count = await self.select_Dcount(qq_number)
 
-                if dialogue_count > 0 and dialogue_count % summary_trigger_threshold == 0:
+                if (
+                    dialogue_count > 0
+                    and dialogue_count % summary_trigger_threshold == 0
+                ):
                     # 获取之前的印象文本
-                    pre_prompt = await self.get_sql_relationship_impression(qq_number, new_name)
+                    await self.get_sql_relationship_impression(
+                        qq_number, new_name
+                    )
 
                     # 执行 LLM 总结
-                    summary_result = await self.llm_summary(event, new_name, qq_number, json_persona_id)
+                    summary_result = await self.llm_summary(
+                        event, new_name, qq_number, json_persona_id
+                    )
 
                     # 如果总结成功（返回了字符串），则更新 System Prompt
                     if summary_result:
-                         # 重新获取最新的完整印象列表（包含刚更新的）
-                        new_full_impression = await self.get_sql_relationship_impression(qq_number, new_name)
-                        await self.write_astrbot_persona_prompt(json_persona_id, new_full_impression)
+                        # 重新获取最新的完整印象列表（包含刚更新的）
+                        new_full_impression = (
+                            await self.get_sql_relationship_impression(
+                                qq_number, new_name
+                            )
+                        )
+                        await self.write_astrbot_persona_prompt(
+                            json_persona_id, new_full_impression
+                        )
 
             except Exception as e:
                 logger.error(f"总结触发流程失败: {e}")
@@ -374,7 +396,9 @@ class PersonaFlow(Star):
             logger.info("当前会话不在设置，未执行代码")
             pass
 
-    async def llm_summary(self, event: AstrMessageEvent, user, qq_number, json_persona_id):
+    async def llm_summary(
+        self, event: AstrMessageEvent, user, qq_number, json_persona_id
+    ):
         """调用LLM进行总结印象和关系"""
         logger.info(f"开始调用大模型进行总结，用户: {user}")
 
@@ -421,7 +445,7 @@ class PersonaFlow(Star):
                 # 调用大模型
                 llm_resp = await self.context.llm_generate(
                     chat_provider_id=provider_id,
-                    system_prompt=dynamic_persona_prompt, # 让机器人用当前人设去思考印象
+                    system_prompt=dynamic_persona_prompt,  # 让机器人用当前人设去思考印象
                     prompt=prompt,
                 )
                 llm_output = llm_resp.completion_text
@@ -438,7 +462,9 @@ class PersonaFlow(Star):
                     # 返回格式化后的字符串，用于插入到 Persona Prompt 中
                     return f"{user}({rel}){qq_number}印象:{imp}。"
                 else:
-                    logger.warning(f"总结JSON解析失败，重试 {attempt+1}/{max_retries}")
+                    logger.warning(
+                        f"总结JSON解析失败，重试 {attempt + 1}/{max_retries}"
+                    )
             except Exception as e:
                 logger.error(f"第 {attempt + 1} 次调用大模型出错: {e}")
 
@@ -482,44 +508,46 @@ class PersonaFlow(Star):
     # ************* astrbot人格提示词操作函数 **********
 
     def get_persona_template(self, base_persona_id):
-            """从 AstrBot 内存中直接获取人格模板"""
-            try:
-                # 1. 获取 personas 列表
-                all_personas = self.context.provider_manager.personas
+        """从 AstrBot 内存中直接获取人格模板"""
+        try:
+            # 1. 获取 personas 列表
+            all_personas = self.context.provider_manager.personas
 
-                target_persona = None
+            target_persona = None
 
-                for p in all_personas:
-                    # 获取当前遍历对象的 ID 和 Name
-                    #p_id = str(p.get("id")) if p.get("id") is not None else "None"
-                    p_name = str(p.get("name")) if p.get("name") is not None else "None"
-                    target = str(base_persona_id)
+            for p in all_personas:
+                # 获取当前遍历对象的 ID 和 Name
+                # p_id = str(p.get("id")) if p.get("id") is not None else "None"
+                p_name = str(p.get("name")) if p.get("name") is not None else "None"
+                target = str(base_persona_id)
 
-                    # if p_id == target or p_name == target:
-                    if p_name == target:
-                        target_persona = p
-                        break
+                # if p_id == target or p_name == target:
+                if p_name == target:
+                    target_persona = p
+                    break
 
-                if target_persona:
-                    logger.info(f"从内存中成功获取人格: {base_persona_id}")
+            if target_persona:
+                logger.info(f"从内存中成功获取人格: {base_persona_id}")
 
-                    p_config = target_persona.get("persona_config", {})
+                p_config = target_persona.get("persona_config", {})
 
-                    sys_prompt = target_persona.get("prompt")
+                sys_prompt = target_persona.get("prompt")
 
-                    # 获取其他属性
-                    begin_dialogs = p_config.get("begin_dialogs") or target_persona.get("begin_dialogs", [])
-                    tools = p_config.get("tools") or target_persona.get("tools", [])
+                # 获取其他属性
+                begin_dialogs = p_config.get("begin_dialogs") or target_persona.get(
+                    "begin_dialogs", []
+                )
+                tools = p_config.get("tools") or target_persona.get("tools", [])
 
-                    return sys_prompt, begin_dialogs, tools
+                return sys_prompt, begin_dialogs, tools
 
-                else:
-                    logger.warning(f"内存中未找到名称或 ID 为 '{base_persona_id}' 的人格。")
-                    return None, None, None
-
-            except Exception as e:
-                logger.error(f"获取内存人格数据失败: {e}", exc_info=True)
+            else:
+                logger.warning(f"内存中未找到名称或 ID 为 '{base_persona_id}' 的人格。")
                 return None, None, None
+
+        except Exception as e:
+            logger.error(f"获取内存人格数据失败: {e}", exc_info=True)
+            return None, None, None
 
     async def update_dynamic_persona(self, base_persona_id, new_system_prompt):
         """更新或创建astrbot'动态'人格"""
@@ -532,7 +560,9 @@ class PersonaFlow(Star):
 
                 # 1. 尝试更新
                 update_sql = "UPDATE dynamic_personas SET system_prompt = ?, updated_at = ? WHERE persona_id = ?"
-                async with db.execute(update_sql, (new_system_prompt, current_time, target_dynamic_id)) as cursor:
+                async with db.execute(
+                    update_sql, (new_system_prompt, current_time, target_dynamic_id)
+                ) as cursor:
                     rowcount = cursor.rowcount
 
                 # 2. 如果不存在则插入
@@ -540,15 +570,19 @@ class PersonaFlow(Star):
                     logger.info(f"动态人格 {target_dynamic_id} 不存在，正在初始化...")
 
                     # 这里调用同步的内存获取函数
-                    template_prompt, template_dialogs, template_tools = self.get_persona_template(base_persona_id)
+                    template_prompt, template_dialogs, template_tools = (
+                        self.get_persona_template(base_persona_id)
+                    )
 
                     if template_prompt is None:
                         return
 
                     # 将 Python 对象 (List/Dict) 序列化为 JSON 字符串
-                    if isinstance(template_dialogs, (list, dict)):
-                        template_dialogs = json.dumps(template_dialogs, ensure_ascii=False)
-                    if isinstance(template_tools, (list, dict)):
+                    if isinstance(template_dialogs, list | dict):
+                        template_dialogs = json.dumps(
+                            template_dialogs, ensure_ascii=False
+                        )
+                    if isinstance(template_tools, list | dict):
                         template_tools = json.dumps(template_tools, ensure_ascii=False)
 
                     insert_sql = """
@@ -627,4 +661,3 @@ class PersonaFlow(Star):
                 logger.info("PersonaFlow 数据库连接已关闭。")
             except Exception as e:
                 logger.error(f"关闭数据库连接失败: {e}")
-
