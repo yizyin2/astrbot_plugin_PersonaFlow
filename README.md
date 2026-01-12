@@ -1,7 +1,7 @@
 # AstrBot Plugin: PersonaFlow (人格关系流)
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-violet)](https://github.com/Soulter/AstrBot)
-[![Version](https://img.shields.io/badge/version-0.7.1(Beta)-blue)](https://github.com/Soulter/AstrBot)
+[![Version](https://img.shields.io/badge/version-0.6(Beta)-blue)](https://github.com/Soulter/AstrBot)
 
 **PersonaFlow** 是一个为 [AstrBot](https://github.com/Soulter/AstrBot) 设计的记忆插件。它通过 AI 自动总结用户与 Bot 之间的对话历史，生成动态的人物关系和印象，并将其注入到模型的人格设定中。
 
@@ -88,27 +88,27 @@
 * 数据库开启 `WAL (Write-Ahead Logging)` 模式，显著提升并发读写性能。
 
 ## 📝 版本历史
-* **v0.7.1(beta)**
-* 更改llm_summary为异步
-
-
 * **v0.7 (Beta)**
-    *   新增 `/osn check` 和 `/osn del` 管理指令。
-    *   优化聊天记录存储格式，提高总结准确度。
-    *   使用 `StarTools` 规范化数据存储路径。
-    *   修复了部分逻辑错误。
+* 新增 `/osn check` 和 `/osn del` 管理指令。
+* 优化聊天记录存储格式，提高总结准确度。
+* 使用 `StarTools` 规范化数据存储路径。
+* 修复了部分逻辑错误。
 
 
 * **v0.6 (Beta)**
-    *   **重构**：迁移至 `aiosqlite`，实现全异步数据库操作。
-    *   **优化**：改为从 `provider_manager` 内存读取人格模板，修复文件锁冲突问题。
-    *   **性能**：增加 System Prompt 内存缓存与数据库 WAL 模式。
+* **重构**：迁移至 `aiosqlite`，实现全异步数据库操作。
+* **优化**：改为从 `provider_manager` 内存读取人格模板，修复文件锁冲突问题。
+* **性能**：增加 System Prompt 内存缓存与数据库 WAL 模式。
 
 
 *   **v0.5.2(Beta)**:
     *   使用 Ruff 格式化代码。
     *   优化数据库操作，增加动态人格表。
     *   修复总结逻辑和 JSON 解析。
+
+
+*   **v0.5.1(Beta)**
+    *   增加总结关系llm的重试
 
 ## 👨‍💻 作者
 
@@ -119,4 +119,3 @@
 
 
 MIT License
-
