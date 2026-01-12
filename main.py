@@ -13,7 +13,7 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, register, StarTools
 
 """
-版本0.7
+版本0.7.5
 优化聊天记录写入数据库时的格式
 更改了一些低级错误
 添加查看所有人印象与删除对应用户指令
@@ -24,14 +24,15 @@ from astrbot.api.star import Context, Star, register, StarTools
     "astrbot_plugin_PersonaFlow",
     "yizyin",
     "由ai自动总结人物关系到数据库，实现在不同群聊记住同一个人之间与ai的关系和印象。",
-    "0.7(Beta)",
+    "0.7.5(Beta)",
 )
 class PersonaFlow(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
         data_dir = StarTools.get_data_dir("astrbot_plugin_PersonaFlow")
-        self.db_path = data_dir / "OSNpermemory.db"
+        default_path = str(data_dir / "OSNpermemory.db")  # 转换为字符串
+        self.db_path = self.config.get("database_path", default_path)
         self.db = None  # 数据库连接对象初始化为None
         self._db_lock = asyncio.Lock()  # 1. 添加锁解决并发初始化问题
         self.cached_dynamic_prompt = None  # 2. 添加内存缓存，避免每次对话读库
