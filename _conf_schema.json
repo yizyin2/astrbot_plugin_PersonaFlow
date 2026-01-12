@@ -24,9 +24,9 @@
         "hint": "生效群聊"
     },
     "database_path": {
-        "description": "插件数据库的路径，默认(./data/OSNpermemory.db)",
+        "description": "插件数据库的路径，不填则默认路径",
         "type": "string",
-        "default": "./data/OSNpermemory.db",
+        "default": null,
         "hint": "插件数据库的存储路径"
     },
     "summary_max_retries":{

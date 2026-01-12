@@ -2,5 +2,5 @@
 "display_name": "人格关系流"
 "desc": "由ai总结人物关系到数据库，实现ai自主更新人格设定"
 "author": "yizyin"
-"version": "0.6(Beta)"
+"version": "0.7(Beta)"
 "repo": "https://github.com/yizyin2/astrbot_plugin_PersonaFlow"

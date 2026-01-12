@@ -10,12 +10,13 @@ import aiosqlite
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 
 """
-版本0.6
-使用self.context.provider_manager.personas方法获取astrbot人格system prompt
-从sqlite3变更为aiosqlite
+版本0.7
+优化聊天记录写入数据库时的格式
+更改了一些低级错误
+添加查看所有人印象与删除对应用户指令
 """
 
 
@@ -23,13 +24,15 @@ from astrbot.api.star import Context, Star, register
     "astrbot_plugin_PersonaFlow",
     "yizyin",
     "由ai自动总结人物关系到数据库，实现在不同群聊记住同一个人之间与ai的关系和印象。",
-    "0.6(Beta)",
+    "0.7(Beta)",
 )
 class PersonaFlow(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
-        self.db_path = self.config.get("database_path", "./data/OSNpermemory.db")
+        data_dir = StarTools.get_data_dir("astrbot_plugin_PersonaFlow")
+        path = os.path.join(data_dir, "OSNpermemory.db")
+        self.db_path = self.config.get("database_path", path)
         self.db = None  # 数据库连接对象初始化为None
         self._db_lock = asyncio.Lock()  # 1. 添加锁解决并发初始化问题
         self.cached_dynamic_prompt = None  # 2. 添加内存缓存，避免每次对话读库
@@ -39,7 +42,7 @@ class PersonaFlow(Star):
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
 
-        logger.info("人格关系流(PersonaFlow) v0.6加载成功!")
+        logger.info("人格关系流(PersonaFlow)加载成功!")
 
     # ************数据库操作函数**********
     async def _get_db(self):
@@ -115,7 +118,7 @@ class PersonaFlow(Star):
                 logger.error(f"插入用户失败: {e}")
                 await db.rollback()
 
-    async def select_Dcount(self, qq_number):
+    async def select_dialogue_count(self, qq_number):
         """查询对话次数"""
         db = await self._get_db()
         try:
@@ -204,7 +207,7 @@ class PersonaFlow(Star):
                 logger.error(f"插入聊天记录失败: {e}")
                 await db.rollback()
 
-    async def get_n_Message_chat_history(self, qq_number, n):
+    async def get_recent_chat_history(self, qq_number, n):
         """获取用户的最近n条聊天记录"""
         db = await self._get_db()
         try:
@@ -266,6 +269,7 @@ class PersonaFlow(Star):
             # 获取配置文件中的基础人格ID
             json_persona_id = self.config.get("personas_name", "")
             if not json_persona_id:
+                logger.warning("人格配置缺失")
                 return
 
             # 2. 优先使用缓存
@@ -362,7 +366,7 @@ class PersonaFlow(Star):
                     "summary_trigger_threshold", 5
                 )
                 qq_number = event.get_sender_id()
-                dialogue_count = await self.select_Dcount(qq_number)
+                dialogue_count = await self.select_dialogue_count(qq_number)
 
                 if (
                     dialogue_count > 0
@@ -408,9 +412,10 @@ class PersonaFlow(Star):
         # 总结时获取对应用户聊天记录条数
         summary_history_count = self.config.get("summary_history_count", 20)
 
-        user_Message_history = await self.get_n_Message_chat_history(
+        user_message_history = await self.get_recent_chat_history(
             event.get_sender_id(), n=summary_history_count
         )
+        #logger.info(f"对话用户聊天记录:{user_Message_history}")
 
         # 获取数据库中的关系和印象
         pre_impression = await self.get_sql_relationship_impression(qq_number, user)
@@ -419,8 +424,9 @@ class PersonaFlow(Star):
         dynamic_persona_prompt = await self.get_dynamic_persona_prompt(json_persona_id)
 
         prompt = f"""
+            请总结用户{user}与你(AI)的关系:\n
             对话历史：\n
-            {user_Message_history}\n
+            {user_message_history}\n
             \n
             之前的印象：\n
             {pre_impression}\n
@@ -431,6 +437,7 @@ class PersonaFlow(Star):
             格式示例：\n
             {{"relationship": "朋友", "impression": "非常幽默"}}
             """
+        logger.info(prompt)
 
         # 获取当前会话使用的聊天模型 ID
         for attempt in range(max_retries):
@@ -475,9 +482,8 @@ class PersonaFlow(Star):
         """合并用户和AI的消息记录"""
         ai_personas = self.config.get("personas_name", "AI助手")
         merged_messages = f"""
-            用户({user_name}): {user_messages}
-            {ai_personas}: {ai_messages}
-            """
+        {user_name}: \"{user_messages}\" {ai_personas}: \"{ai_messages}\"\n
+        """
         return merged_messages.strip()
 
     # 解析LLM返回的JSON
@@ -661,3 +667,96 @@ class PersonaFlow(Star):
                 logger.info("PersonaFlow 数据库连接已关闭。")
             except Exception as e:
                 logger.error(f"关闭数据库连接失败: {e}")
+
+
+        # ************* 指令部分 **********
+
+    @filter.command_group("osn")
+    def osn(self):
+        pass
+
+    @osn.command("check")
+    async def check_memory(self, event: AstrMessageEvent):
+        """
+        查看数据库中所有已保存的人物印象
+        """
+        db = await self._get_db()
+        try:
+            sql = "SELECT qq_number, name, relationship, impression, dialogue_count FROM Impression"
+            async with db.execute(sql) as cursor:
+                rows = await cursor.fetchall()
+
+            if not rows:
+                yield event.plain_result("📂 数据库中暂无任何印象记录。")
+                return
+
+            msg_list = ["📂 当前已存储的人物印象：", "=" * 20]
+            
+            for row in rows:
+                uid = row[0]
+                name = row[1] if row[1] else "未知"
+                rel = row[2] if row[2] else "暂无"
+                imp = row[3] if row[3] else "暂无"
+                count = row[4]
+                
+                info = (
+                    f"👤 用户: {name} ({uid})\n"
+                    f"🔗 关系: {rel}\n"
+                    f"🧠 印象: {imp}\n"
+                    f"💬 统计: {count}次对话"
+                )
+                msg_list.append(info)
+                msg_list.append("-" * 20)
+            
+            # 避免消息过长，简单合并
+            result_text = "\n".join(msg_list)
+            yield event.plain_result(result_text)
+
+        except Exception as e:
+            logger.error(f"查询数据库失败: {e}")
+            yield event.plain_result(f"❌ 查询失败: {e}")
+
+    @osn.command("del")
+    async def delete_memory(self, event: AstrMessageEvent, target_id: str):
+        """
+        删除指定用户的关系与记忆
+        用法: /osn del <user_id>
+        """
+        if not target_id:
+            yield event.plain_result("❌ 请输入要删除的用户ID。例如: /osn del 123456")
+            return
+
+        db = await self._get_db()
+        
+        async with self._db_lock:
+            try:
+                # 1. 检查用户是否存在
+                async with db.execute("SELECT name FROM Impression WHERE qq_number = ?", (target_id,)) as cursor:
+                    res = await cursor.fetchone()
+                
+                if not res:
+                    yield event.plain_result(f"⚠️ 未找到 ID 为 {target_id} 的记录。")
+                    return
+                
+                user_name = res[0]
+
+                # 2. 删除印象表记录
+                await db.execute("DELETE FROM Impression WHERE qq_number = ?", (target_id,))
+                
+                # 3. 删除聊天记录表记录 (彻底遗忘)
+                await db.execute("DELETE FROM Message WHERE qq_number = ?", (target_id,))
+                
+                await db.commit()
+                
+                # 4. 尝试更新动态 Prompt (如果需要立刻生效)
+                # 因为 Prompt 是基于所有人的印象生成的，删除一个人后，应该重新生成或清除缓存
+                self.cached_dynamic_prompt = None  # 简单的做法：清除内存缓存，下次对话自动重新拉取
+                
+                logger.info(f"已删除用户 {user_name}({target_id}) 的所有数据")
+                yield event.plain_result(f"🗑️ 已成功删除用户 [{user_name}] ({target_id}) 的印象与聊天记录。")
+
+            except Exception as e:
+                logger.error(f"删除数据失败: {e}")
+                await db.rollback()
+                yield event.plain_result(f"❌ 删除失败: {e}")
+
