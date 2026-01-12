@@ -10,29 +10,29 @@ import aiosqlite
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.api.star import Context, Star, register, StarTools
+from astrbot.api.star import Context, Star, StarTools, register
 
 """
-版本0.7
+版本0.7.1
 优化聊天记录写入数据库时的格式
 更改了一些低级错误
 添加查看所有人印象与删除对应用户指令
+更改llm_summary为异步
 """
 
 
 @register(
     "astrbot_plugin_PersonaFlow",
     "yizyin",
-    "由ai自动总结人物关系到数据库，实现在不同群聊记住同一个人之间与ai的关系和印象。",
-    "0.7(Beta)",
+    "由ai自动总结人物关系到数据库，实现在不同群聊记住同一个人之间与ai的关系和印象，即使new对话也可以保留人际关系。",
+    "0.7.1(Beta)",
 )
 class PersonaFlow(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
         data_dir = StarTools.get_data_dir("astrbot_plugin_PersonaFlow")
-        path = os.path.join(data_dir, "OSNpermemory.db")
-        self.db_path = self.config.get("database_path", path)
+        self.db_path = data_dir / "OSNpermemory.db"
         self.db = None  # 数据库连接对象初始化为None
         self._db_lock = asyncio.Lock()  # 1. 添加锁解决并发初始化问题
         self.cached_dynamic_prompt = None  # 2. 添加内存缓存，避免每次对话读库
@@ -44,7 +44,7 @@ class PersonaFlow(Star):
 
         logger.info("人格关系流(PersonaFlow)加载成功!")
 
-    # ************数据库操作函数**********
+    # ************ 数据库操作函数 **********
     async def _get_db(self):
         """懒加载获取数据库连接"""
         if self.db is None:
@@ -108,7 +108,7 @@ class PersonaFlow(Star):
     async def insert_user(self, qq_number, user_name):
         """插入用户信息到数据库"""
         db = await self._get_db()
-        async with self._db_lock:  # 写操作加锁
+        async with self._db_lock:
             try:
                 sql = "INSERT INTO Impression (qq_number, name) VALUES (?, ?)"
                 await db.execute(sql, (qq_number, user_name))
@@ -258,9 +258,8 @@ class PersonaFlow(Star):
     async def inject_dynamic_persona(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
-        current_session_id = str(event.get_session_id())  # 6. 强转字符串
+        current_session_id = str(event.get_session_id())
 
-        # 6. 配置项强转字符串进行比对
         active_session_ids = [
             str(x) for x in self.config.get("apply_to_group_chat", [])
         ]
@@ -322,9 +321,6 @@ class PersonaFlow(Star):
                     user_message, resp.completion_text, new_name
                 )
 
-                # 确保数据库已连接
-                await self._get_db()
-
                 # 1. 先存聊天记录
                 await self.add_persona_chat_history(qq_number, message)
 
@@ -378,8 +374,10 @@ class PersonaFlow(Star):
                     )
 
                     # 执行 LLM 总结
-                    summary_result = await self.llm_summary(
-                        event, new_name, qq_number, json_persona_id
+                    summary_result = asyncio.create_task(
+                        self.llm_summary(
+                            event, new_name, qq_number, json_persona_id
+                        )
                     )
 
                     # 如果总结成功（返回了字符串），则更新 System Prompt
@@ -406,7 +404,7 @@ class PersonaFlow(Star):
         """调用LLM进行总结印象和关系"""
         logger.info(f"开始调用大模型进行总结，用户: {user}")
 
-        # 最大总结次数
+        # LLM总结最大重试次数
         max_retries = self.config.get("summary_max_retries", 3)
 
         # 总结时获取对应用户聊天记录条数
@@ -523,11 +521,9 @@ class PersonaFlow(Star):
 
             for p in all_personas:
                 # 获取当前遍历对象的 ID 和 Name
-                # p_id = str(p.get("id")) if p.get("id") is not None else "None"
                 p_name = str(p.get("name")) if p.get("name") is not None else "None"
                 target = str(base_persona_id)
 
-                # if p_id == target or p_name == target:
                 if p_name == target:
                     target_persona = p
                     break
@@ -691,14 +687,14 @@ class PersonaFlow(Star):
                 return
 
             msg_list = ["📂 当前已存储的人物印象：", "=" * 20]
-            
+
             for row in rows:
                 uid = row[0]
                 name = row[1] if row[1] else "未知"
                 rel = row[2] if row[2] else "暂无"
                 imp = row[3] if row[3] else "暂无"
                 count = row[4]
-                
+
                 info = (
                     f"👤 用户: {name} ({uid})\n"
                     f"🔗 关系: {rel}\n"
@@ -707,7 +703,7 @@ class PersonaFlow(Star):
                 )
                 msg_list.append(info)
                 msg_list.append("-" * 20)
-            
+
             # 避免消息过长，简单合并
             result_text = "\n".join(msg_list)
             yield event.plain_result(result_text)
@@ -727,31 +723,31 @@ class PersonaFlow(Star):
             return
 
         db = await self._get_db()
-        
+
         async with self._db_lock:
             try:
                 # 1. 检查用户是否存在
                 async with db.execute("SELECT name FROM Impression WHERE qq_number = ?", (target_id,)) as cursor:
                     res = await cursor.fetchone()
-                
+
                 if not res:
                     yield event.plain_result(f"⚠️ 未找到 ID 为 {target_id} 的记录。")
                     return
-                
+
                 user_name = res[0]
 
                 # 2. 删除印象表记录
                 await db.execute("DELETE FROM Impression WHERE qq_number = ?", (target_id,))
-                
+
                 # 3. 删除聊天记录表记录 (彻底遗忘)
                 await db.execute("DELETE FROM Message WHERE qq_number = ?", (target_id,))
-                
+
                 await db.commit()
-                
+
                 # 4. 尝试更新动态 Prompt (如果需要立刻生效)
                 # 因为 Prompt 是基于所有人的印象生成的，删除一个人后，应该重新生成或清除缓存
                 self.cached_dynamic_prompt = None  # 简单的做法：清除内存缓存，下次对话自动重新拉取
-                
+
                 logger.info(f"已删除用户 {user_name}({target_id}) 的所有数据")
                 yield event.plain_result(f"🗑️ 已成功删除用户 [{user_name}] ({target_id}) 的印象与聊天记录。")
 
