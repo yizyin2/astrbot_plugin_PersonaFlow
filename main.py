@@ -13,10 +13,8 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, register, StarTools
 
 """
-版本0.7.5
-优化聊天记录写入数据库时的格式
-更改了一些低级错误
-添加查看所有人印象与删除对应用户指令
+版本0.7.6
+修复del函数未更新动态提示词的bug
 """
 
 
@@ -24,7 +22,7 @@ from astrbot.api.star import Context, Star, register, StarTools
     "astrbot_plugin_PersonaFlow",
     "yizyin",
     "由ai自动总结人物关系到数据库，实现在不同群聊记住同一个人之间与ai的关系和印象。",
-    "0.7.5(Beta)",
+    "0.7.6(Beta)",
 )
 class PersonaFlow(Star):
     def __init__(self, context: Context, config: dict):
@@ -157,7 +155,7 @@ class PersonaFlow(Star):
                 logger.error(f"更新关系与印象失败: {e}")
                 await db.rollback()
 
-    async def get_sql_relationship_impression(self, qq_number, user):
+    async def get_sql_relationship_impression(self):
         """获取全部关系与印象"""
         db = await self._get_db()
         try:
@@ -370,9 +368,7 @@ class PersonaFlow(Star):
                     and dialogue_count % summary_trigger_threshold == 0
                 ):
                     # 获取之前的印象文本
-                    await self.get_sql_relationship_impression(
-                        qq_number, new_name
-                    )
+                    await self.get_sql_relationship_impression()
 
                     # 执行 LLM 总结
                     summary_result = await self.llm_summary(
@@ -383,9 +379,7 @@ class PersonaFlow(Star):
                     if summary_result:
                         # 重新获取最新的完整印象列表（包含刚更新的）
                         new_full_impression = (
-                            await self.get_sql_relationship_impression(
-                                qq_number, new_name
-                            )
+                            await self.get_sql_relationship_impression()
                         )
                         await self.write_astrbot_persona_prompt(
                             json_persona_id, new_full_impression
@@ -415,7 +409,7 @@ class PersonaFlow(Star):
         #logger.info(f"对话用户聊天记录:{user_Message_history}")
 
         # 获取数据库中的关系和印象
-        pre_impression = await self.get_sql_relationship_impression(qq_number, user)
+        pre_impression = await self.get_sql_relationship_impression()
 
         # 获取当前的(动态)系统提示词
         dynamic_persona_prompt = await self.get_dynamic_persona_prompt(json_persona_id)
@@ -723,11 +717,18 @@ class PersonaFlow(Star):
             yield event.plain_result("❌ 请输入要删除的用户ID。例如: /osn del 123456")
             return
 
+        # 获取配置文件中的基础人格ID (用于后续更新 Prompt)
+        json_persona_id = self.config.get("personas_name", "")
+        if not json_persona_id:
+            yield event.plain_result("⚠️ 警告：配置文件中未设置 personas_name，仅删除数据，无法刷新动态人格。")
+
         db = await self._get_db()
+        user_name = "未知用户"
         
+        # 执行数据库删除操作 (在一个事务锁中完成)
         async with self._db_lock:
             try:
-                # 1. 检查用户是否存在
+                # 检查用户是否存在
                 async with db.execute("SELECT name FROM Impression WHERE qq_number = ?", (target_id,)) as cursor:
                     res = await cursor.fetchone()
                 
@@ -737,23 +738,41 @@ class PersonaFlow(Star):
                 
                 user_name = res[0]
 
-                # 2. 删除印象表记录
+                # 删除印象表记录
                 await db.execute("DELETE FROM Impression WHERE qq_number = ?", (target_id,))
                 
-                # 3. 删除聊天记录表记录 (彻底遗忘)
+                # 删除聊天记录表记录
                 await db.execute("DELETE FROM Message WHERE qq_number = ?", (target_id,))
                 
                 await db.commit()
+                logger.info(f"已从数据库删除用户 {user_name}({target_id}) 的所有数据")
                 
-                # 4. 尝试更新动态 Prompt (如果需要立刻生效)
-                # 因为 Prompt 是基于所有人的印象生成的，删除一个人后，应该重新生成或清除缓存
-                self.cached_dynamic_prompt = None  # 简单的做法：清除内存缓存，下次对话自动重新拉取
+            except Exception as e:
+                await db.rollback()
+                logger.error(f"删除数据失败: {e}")
+                yield event.plain_result(f"❌ 删除失败: {e}")
+                return
+
+        # 2. 更新动态人格 Prompt (锁释放后执行，避免 update_dynamic_persona 内部死锁)
+        # 只有配置了人格ID才执行更新
+        if json_persona_id:
+            try:
+                yield event.plain_result(f"🗑️ 已删除 [{user_name}]，正在重构全员记忆...")
+
+                # A. 获取删除该用户后，剩余所有人的印象文本
+                new_full_impression = await self.get_sql_relationship_impression()
+
+                # B. 调用写入逻辑，这会自动：
+                #    1. 读取原始模板
+                #    2. 替换 {Impression}
+                #    3. 更新数据库 dynamic_personas 表
+                #    4. 更新 self.cached_dynamic_prompt 缓存
+                await self.write_astrbot_persona_prompt(json_persona_id, new_full_impression)
                 
-                logger.info(f"已删除用户 {user_name}({target_id}) 的所有数据")
-                yield event.plain_result(f"🗑️ 已成功删除用户 [{user_name}] ({target_id}) 的印象与聊天记录。")
+                yield event.plain_result(f"✅ 成功！[{user_name}] ({target_id}) 已被遗忘，当前人格记忆已刷新。")
 
             except Exception as e:
-                logger.error(f"删除数据失败: {e}")
-                await db.rollback()
-                yield event.plain_result(f"❌ 删除失败: {e}")
-
+                logger.error(f"刷新动态人格失败: {e}")
+                yield event.plain_result(f"⚠️ 数据已删除，但在刷新人格记忆时出错: {e}")
+        else:
+            yield event.plain_result(f"✅ 数据已删除，但因未配置 personas_name，未刷新当前人格。")
