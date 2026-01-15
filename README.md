@@ -76,7 +76,7 @@
 
 ## 🛠️ 技术细节
 
-1.  **数据库**：插件会自动创建 `./data/OSNpermemory.db`，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
+1.  **数据库**：插件会自动创建数据库目录，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
 2. **数据流向**：
 * **读**：通过 `self.context.provider_manager.personas` 直接从 AstrBot 内存中读取基础人格模板（安全、快速）。
 * **写**：用户印象存储在独立的 `./data/OSNpermemory.db` 中，不污染 AstrBot 核心数据 (`data_v4.db`)。
