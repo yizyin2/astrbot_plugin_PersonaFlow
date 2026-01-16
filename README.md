@@ -72,6 +72,37 @@
 插件会自动将 `{Impression}` 替换为类似以下的内容：
 > `用户昵称(qq号),关系:朋友,印象:非常幽默，喜欢开玩笑。`
 
+```mermaid
+graph TD
+    Start((LLM 结束钩子)) --> Save[存储聊天记录]
+    Save --> Check{当前对话次数 % 阈值 == 0}
+    
+    Check -- No --> End[结束流程]
+    Check -- Yes --> Summary[进入总结流程]
+    
+    Summary --> Input1[读取最近N条聊天记录]
+    Summary --> Input2[读取当前生效的 System Prompt]
+    Summary --> Input3[读取当前 Impression 表中的旧印象]
+    
+    Input1 --> Process[调用 LLM 进行总结<br/>llm_summary]
+    Input2 --> Process
+    Input3 --> Process
+    
+    Process --> Valid{LLM返回是否为有效JSON}
+    
+    Valid -- No --> Retry[重试 / 记录错误并结束]
+    Valid -- Yes --> Parse[解析 JSON]
+    
+    Parse --> UpdateDB[更新 Impression 表<br/>关系与印象]
+    Parse --> Concat[拼接新 Prompt]
+    
+    UpdateDB --> CheckID{动态 ID 是否存在?}
+    Concat --> CheckID
+    
+    CheckID -- No --> Init[从 AstrBot 内存读取原始模板<br/>并插入新记录]
+    CheckID -- Yes --> FinalUpdate[更新 dynamic_personas 表<br/>system_prompt 字段]
+```
+
 **注意：** 如果你的 System Prompt 中没有 `{Impression}`，插件会自动将印象追加到提示词的**末尾**，但这可能不如手动指定位置效果好。
 
 ## 🛠️ 技术细节
