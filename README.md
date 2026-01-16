@@ -18,7 +18,7 @@
 
 ## 📦 安装方法
 
-1.  将`astrbot_plugin_infinite_dialogue`文件夹放置在 AstrBot 的`data/plugins/`目录下。
+1.  将`astrbot_plugin_PersonaFlow`文件夹放置在 AstrBot 的`data/plugins/`目录下。
 2.  重启AstrBot。
 3.  在控制台或 WebUI 中启用插件。
 
