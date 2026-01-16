@@ -86,6 +86,8 @@
 * 使用 `asyncio.Lock` 保证数据库写入操作的原子性，防止竞争条件。
 * 数据库开启 `WAL (Write-Ahead Logging)` 模式，显著提升并发读写性能。
 
+## 🔧 工作原理 (Workflow)
+
 ```mermaid
 graph TD
     Start((LLM 结束钩子)) --> Save[存储聊天记录]
