@@ -707,6 +707,7 @@ class PersonaFlow(Star):
             logger.error(f"查询数据库失败: {e}")
             yield event.plain_result(f"❌ 查询失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @osn.command("del")
     async def delete_memory(self, event: AstrMessageEvent, target_id: str):
         """
