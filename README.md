@@ -71,6 +71,20 @@
 **插件工作原理：**
 插件会自动将 `{Impression}` 替换为类似以下的内容：
 > `用户昵称(qq号),关系:朋友,印象:非常幽默，喜欢开玩笑。`
+**注意：** 如果你的 System Prompt 中没有 `{Impression}`，插件会自动将印象追加到提示词的**末尾**，但这可能不如手动指定位置效果好。
+
+## 🛠️ 技术细节
+
+1.  **数据库**：插件会自动创建数据库目录，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
+2. **数据流向**：
+* **读**：通过 `self.context.provider_manager.personas` 直接从 AstrBot 内存中读取基础人格模板（安全、快速）。
+* **写**：用户印象存储在独立的 `./data/OSNpermemory.db` 中，不污染 AstrBot 核心数据 (`data_v4.db`)。
+3.  **Hook 机制**：
+    *   `on_llm_request`: 拦截请求，将带有印象的动态 System Prompt 注入模型。
+    *   `on_llm_response`: 记录对话，触发总结逻辑。
+4. **并发安全**：
+* 使用 `asyncio.Lock` 保证数据库写入操作的原子性，防止竞争条件。
+* 数据库开启 `WAL (Write-Ahead Logging)` 模式，显著提升并发读写性能。
 
 ```mermaid
 graph TD
@@ -102,21 +116,6 @@ graph TD
     CheckID -- No --> Init[从 AstrBot 内存读取原始模板<br/>并插入新记录]
     CheckID -- Yes --> FinalUpdate[更新 dynamic_personas 表<br/>system_prompt 字段]
 ```
-
-**注意：** 如果你的 System Prompt 中没有 `{Impression}`，插件会自动将印象追加到提示词的**末尾**，但这可能不如手动指定位置效果好。
-
-## 🛠️ 技术细节
-
-1.  **数据库**：插件会自动创建数据库目录，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
-2. **数据流向**：
-* **读**：通过 `self.context.provider_manager.personas` 直接从 AstrBot 内存中读取基础人格模板（安全、快速）。
-* **写**：用户印象存储在独立的 `./data/OSNpermemory.db` 中，不污染 AstrBot 核心数据 (`data_v4.db`)。
-3.  **Hook 机制**：
-    *   `on_llm_request`: 拦截请求，将带有印象的动态 System Prompt 注入模型。
-    *   `on_llm_response`: 记录对话，触发总结逻辑。
-4. **并发安全**：
-* 使用 `asyncio.Lock` 保证数据库写入操作的原子性，防止竞争条件。
-* 数据库开启 `WAL (Write-Ahead Logging)` 模式，显著提升并发读写性能。
 
 ## 📝 版本历史
 * **v0.7 (Beta)**
