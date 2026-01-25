@@ -39,7 +39,7 @@ class PersonaFlow(Star):
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
 
-        logger.info("人格关系流(PersonaFlow)加载成功!")
+        logger.info("人格关系流(PersonaFlow)加载成功!  路径：" + self.db_path)
 
     # ************数据库操作函数**********
     async def _get_db(self):
