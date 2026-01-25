@@ -408,7 +408,7 @@ class PersonaFlow(Star):
 
         prompt = f"""
             请总结用户{user}与你(AI)的关系:\n
-            对话历史：\n
+            仅与该用户的对话历史：\n
             {user_message_history}\n
             \n
             之前的印象：\n
