@@ -30,7 +30,7 @@ class PersonaFlow(Star):
         self.config = config
         data_dir = StarTools.get_data_dir("astrbot_plugin_PersonaFlow")
         default_path = str(data_dir / "OSNpermemory.db")  # 转换为字符串
-        self.db_path = self.config.get("database_path", default_path)
+        self.db_path = self.config.get("database_path") or default_path
         self.db = None  # 数据库连接对象初始化为None
         self._db_lock = asyncio.Lock()  # 1. 添加锁解决并发初始化问题
 
