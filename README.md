@@ -18,7 +18,7 @@
 
 ## 📦 安装方法
 
-1.  将`astrbot_plugin_PersonaFlow`文件夹放置在 AstrBot 的`data/plugins/`目录下。
+1.  将`astrbot_plugin_infinite_dialogue`文件夹放置在 AstrBot 的`data/plugins/`目录下。
 2.  重启AstrBot。
 3.  在控制台或 WebUI 中启用插件。
 
@@ -71,11 +71,12 @@
 **插件工作原理：**
 插件会自动将 `{Impression}` 替换为类似以下的内容：
 > `用户昵称(qq号),关系:朋友,印象:非常幽默，喜欢开玩笑。`
+
 **注意：** 如果你的 System Prompt 中没有 `{Impression}`，插件会自动将印象追加到提示词的**末尾**，但这可能不如手动指定位置效果好。
 
 ## 🛠️ 技术细节
 
-1.  **数据库**：插件会自动创建数据库目录，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
+1.  **数据库**：插件会自动创建 `./data/OSNpermemory.db`，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
 2. **数据流向**：
 * **读**：通过 `self.context.provider_manager.personas` 直接从 AstrBot 内存中读取基础人格模板（安全、快速）。
 * **写**：用户印象存储在独立的 `./data/OSNpermemory.db` 中，不污染 AstrBot 核心数据 (`data_v4.db`)。
@@ -85,39 +86,6 @@
 4. **并发安全**：
 * 使用 `asyncio.Lock` 保证数据库写入操作的原子性，防止竞争条件。
 * 数据库开启 `WAL (Write-Ahead Logging)` 模式，显著提升并发读写性能。
-
-## 🔧 工作原理 (Workflow)
-
-```mermaid
-graph TD
-    Start((LLM 结束钩子)) --> Save[存储聊天记录]
-    Save --> Check{当前对话次数 % 阈值 == 0}
-    
-    Check -- No --> End[结束流程]
-    Check -- Yes --> Summary[进入总结流程]
-    
-    Summary --> Input1[读取最近N条聊天记录]
-    Summary --> Input2[读取当前生效的 System Prompt]
-    Summary --> Input3[读取当前 Impression 表中的旧印象]
-    
-    Input1 --> Process[调用 LLM 进行总结<br/>llm_summary]
-    Input2 --> Process
-    Input3 --> Process
-    
-    Process --> Valid{LLM返回是否为有效JSON}
-    
-    Valid -- No --> Retry[重试 / 记录错误并结束]
-    Valid -- Yes --> Parse[解析 JSON]
-    
-    Parse --> UpdateDB[更新 Impression 表<br/>关系与印象]
-    Parse --> Concat[拼接新 Prompt]
-    
-    UpdateDB --> CheckID{动态 ID 是否存在?}
-    Concat --> CheckID
-    
-    CheckID -- No --> Init[从 AstrBot 内存读取原始模板<br/>并插入新记录]
-    CheckID -- Yes --> FinalUpdate[更新 dynamic_personas 表<br/>system_prompt 字段]
-```
 
 ## 📝 版本历史
 * **v0.7 (Beta)**

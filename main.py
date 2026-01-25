@@ -13,8 +13,8 @@ from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, register, StarTools
 
 """
-版本0.7.6
-修复del函数未更新动态提示词的bug
+版本0.7.7
+移除动态人格Prompt缓存
 """
 
 
@@ -33,7 +33,6 @@ class PersonaFlow(Star):
         self.db_path = self.config.get("database_path", default_path)
         self.db = None  # 数据库连接对象初始化为None
         self._db_lock = asyncio.Lock()  # 1. 添加锁解决并发初始化问题
-        self.cached_dynamic_prompt = None  # 2. 添加内存缓存，避免每次对话读库
 
         # 4. 确保目录存在
         db_dir = os.path.dirname(self.db_path)
@@ -270,19 +269,12 @@ class PersonaFlow(Star):
                 logger.warning("人格配置缺失")
                 return
 
-            # 2. 优先使用缓存
-            if self.cached_dynamic_prompt:
-                req.system_prompt = self.cached_dynamic_prompt
-                # logger.debug(f"已应用缓存的动态人格")
-                return
-
             # 缓存未命中，查库
             target_dynamic_id = json_persona_id + "动态"
             dynamic_prompt = await self.get_dynamic_persona(target_dynamic_id)
             # logger.info(f"使用的system prompt:{dynamic_prompt}")
 
             if dynamic_prompt:
-                self.cached_dynamic_prompt = dynamic_prompt  # 更新缓存
                 req.system_prompt = dynamic_prompt
                 # logger.debug(f"已应用动态人格: {target_dynamic_id}")
             else:
@@ -600,7 +592,6 @@ class PersonaFlow(Star):
                     )
 
                 await db.commit()
-                self.cached_dynamic_prompt = new_system_prompt
                 logger.info(f"成功更新 ID 为 {target_dynamic_id} 的人格提示词。")
 
             except Exception as e:
@@ -636,9 +627,6 @@ class PersonaFlow(Star):
     async def get_dynamic_persona_prompt(self, persona_id):
         """获取Prompt"""
         dynamic_id = persona_id + "动态"
-        # 优先读缓存
-        if self.cached_dynamic_prompt:
-            return self.cached_dynamic_prompt
 
         local_prompt = await self.get_dynamic_persona(dynamic_id)
 
@@ -707,7 +695,6 @@ class PersonaFlow(Star):
             logger.error(f"查询数据库失败: {e}")
             yield event.plain_result(f"❌ 查询失败: {e}")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @osn.command("del")
     async def delete_memory(self, event: AstrMessageEvent, target_id: str):
         """
@@ -767,7 +754,6 @@ class PersonaFlow(Star):
                 #    1. 读取原始模板
                 #    2. 替换 {Impression}
                 #    3. 更新数据库 dynamic_personas 表
-                #    4. 更新 self.cached_dynamic_prompt 缓存
                 await self.write_astrbot_persona_prompt(json_persona_id, new_full_impression)
                 
                 yield event.plain_result(f"✅ 成功！[{user_name}] ({target_id}) 已被遗忘，当前人格记忆已刷新。")
