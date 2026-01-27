@@ -1,7 +1,8 @@
 "name": "astrbot_plugin_PersonaFlow"
 "display_name": "astrbot_plugin_PersonaFlow"
-"desc": "由ai总结人物关系到数据库，实现ai自主更新人格设定，即使new对话也能保留人物关系。"
+"desc": "由ai总结人物关系到数据库，实现ai自主更新人格设定，可以在不同群聊记住同一个人之间与ai的关系和印象，即使new对话也能保留人物关系。"
 "author": "yizyin"
 "version": "0.7.7(Beta)"
 
 "repo": "https://github.com/yizyin2/astrbot_plugin_PersonaFlow"
+
