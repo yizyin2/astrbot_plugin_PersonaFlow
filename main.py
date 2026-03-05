@@ -383,10 +383,10 @@ class PersonaFlow(Star):
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        # 获取系统人格id
+        # 获取系统群聊id
         current_session_id = str(event.get_session_id())
     
-        # 获取json人格id
+        # 获取配置文件中的群聊id
         active_session_ids = [
             str(x) for x in self.config.get("apply_to_group_chat", [])
         ]
@@ -502,7 +502,7 @@ class PersonaFlow(Star):
             except Exception as e:
                 logger.error(f"记忆总结流程失败: {e}")
         else:
-            logger.info(f"系统人格({current_session_id})与配置文件中的人格({active_session_ids})不匹配，未执行代码")
+            logger.info(f"系统获取到的群聊({current_session_id})与配置文件中的群聊({active_session_ids})不匹配，未执行代码")
             pass
 
     async def llm_summary(
