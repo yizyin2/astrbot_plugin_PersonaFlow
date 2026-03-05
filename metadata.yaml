@@ -1,5 +1,5 @@
-"name": "astrbot_plugin_PersonaFlowNacho"
-"display_name": "astrbot_plugin_PersonaFlowNacho"
+"name": "astrbot_plugin_PersonaFlow"
+"display_name": "astrbot_plugin_PersonaFlow"
 "desc": "由ai总结人物关系到数据库，实现ai自主更新人格设定，同时实现记忆总结功能，即使new对话也能记住之前的对话内容，增强连续对话体验。"
 "author": "yizyin"
 "version": "1.0.0"
