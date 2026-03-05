@@ -34,5 +34,17 @@
         "type": "int",
         "default": 3,
         "hint": "LLM重试次数"
+    },
+    "summary_memory_trigger_threshold": {
+        "description": "对话多少次后触发全文总结(M)",
+        "type": "int",
+        "default": 20,
+        "hint": "对话达到此次数后会触发自动总结"
+    },
+    "summary_memory_history_count": {
+        "description": "总结全文时获取的历史对话记录条数(N)",
+        "type": "int",
+        "default": 30,
+        "hint": "触发总结时，获取的历史记录条数"
     }
 }
