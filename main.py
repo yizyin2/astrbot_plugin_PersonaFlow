@@ -394,7 +394,7 @@ class PersonaFlow(Star):
         # logger.info(f"json会话id:{active_session_id}")
 
         # 判断当前对话是否属于配置文件中设定的对话
-        if not active_session_ids or current_session_id in active_session_ids:
+        if not active_session_ids or active_session_ids in current_session_id:
             # 提前定义变量，防止try块外引用报错
             new_name = "未知用户"
             qq_number = "0"
