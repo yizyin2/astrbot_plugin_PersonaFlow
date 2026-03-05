@@ -363,7 +363,8 @@ class PersonaFlow(Star):
             str(x) for x in self.config.get("apply_to_group_chat", [])
         ]
 
-        if not active_session_ids or current_session_id in active_session_ids:
+        # 只要 session_id 中包含配置的群号即可匹配（兼容 "QQ号_群号" 等复合格式）
+        if not active_session_ids or any(sid in current_session_id for sid in active_session_ids):
             # 获取配置文件中的基础人格ID
             json_persona_id = self.config.get("personas_name", "")
             if not json_persona_id:
@@ -393,8 +394,8 @@ class PersonaFlow(Star):
 
         # logger.info(f"json会话id:{active_session_id}")
 
-        # 判断当前对话是否属于配置文件中设定的对话
-        if not active_session_ids or active_session_ids in current_session_id:
+        # 只要 session_id 中包含配置的群号即可匹配（兼容 "QQ号_群号" 等复合格式）
+        if not active_session_ids or any(sid in current_session_id for sid in active_session_ids):
             # 提前定义变量，防止try块外引用报错
             new_name = "未知用户"
             qq_number = "0"
