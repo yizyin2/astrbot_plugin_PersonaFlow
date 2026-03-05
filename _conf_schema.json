@@ -29,7 +29,7 @@
         "default": null,
         "hint": "插件数据库的存储路径"
     },
-    "summary_max_retries":{
+    "summary_max_retries": {
         "description": "内部模型总结失败时，最大重试次数",
         "type": "int",
         "default": 3,
@@ -38,13 +38,13 @@
     "summary_memory_trigger_threshold": {
         "description": "对话多少次后触发全文总结(M)",
         "type": "int",
-        "default": 20,
+        "default": 50,
         "hint": "对话达到此次数后会触发自动总结"
     },
     "summary_memory_history_count": {
         "description": "总结全文时获取的历史对话记录条数(N)",
         "type": "int",
-        "default": 30,
+        "default": 50,
         "hint": "触发总结时，获取的历史记录条数"
     }
 }
