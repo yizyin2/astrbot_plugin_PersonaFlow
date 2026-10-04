@@ -19,6 +19,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 开放 Memory 自动压缩阈值和每批条数，默认超过30条时将最旧的20条合并为1条。
 压缩结果继承最旧记录的时间，可再次参与压缩；压缩失败时保留原记录。
 人格注入仅替换匹配的原始人格段，保留框架、技能及工具等其他系统提示。
+每次请求使用最新人格模板重新组装已有记忆，编辑并保存人格后无需重载插件，内容未变化时不重复写库。
 消息保存与计数读取使用同一事务，修复并发下漏触发或重复触发总结的问题。
 压缩任务串行执行并校验待替换批次，避免并发重复写入记忆。
 群聊白名单改用群号匹配，兼容独立会话模式。
@@ -483,11 +484,11 @@ class PersonaFlow(Star):
     async def inject_dynamic_persona(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
-        """Replace the configured persona without discarding other instructions.
+        """替换配置指定的人格段，保留其他提示并防止重复注入。
 
-        Args:
-            event: The message event, used to check the group allowlist.
-            req: The outgoing request whose persona section may be replaced.
+        参数：
+            event: 当前消息事件，用于检查群聊白名单。
+            req: 即将发送的模型请求。
         """
         current_group_id = str(event.get_group_id() or "")
 
@@ -502,29 +503,36 @@ class PersonaFlow(Star):
                 logger.warning("人格配置缺失")
                 return
 
-            target_dynamic_id = json_persona_id + "动态"
-            dynamic_prompt = await self.get_dynamic_persona(target_dynamic_id)
-            # logger.info(f"使用的system prompt:{dynamic_prompt}")
+            raw_prompt, _, _ = self.get_persona_template(json_persona_id)
+            if not raw_prompt:
+                return
+
+            # 使用当前模板重新组装记忆，避免旧的动态人格覆盖刚保存的人格修改。
+            dynamic_prompt = await self.get_dynamic_persona_prompt(json_persona_id)
 
             if dynamic_prompt:
                 current_prompt = req.system_prompt or ""
-                raw_prompt, _, _ = self.get_persona_template(json_persona_id)
+                previous_prompt = getattr(req, "_personaflow_injected_prompt", None)
+                if previous_prompt and previous_prompt in current_prompt:
+                    # 同一请求保持已注入的版本，新记忆从下一条请求开始使用。
+                    return
+                if self.get_persona_template(json_persona_id)[0] != raw_prompt:
+                    # 等待读库时模板发生变化，保留当前请求，避免混用新旧模板。
+                    logger.debug("人格模板在组装期间发生变化，跳过本次注入。")
+                    return
                 if not current_prompt:
                     req.system_prompt = dynamic_prompt
                 elif dynamic_prompt in current_prompt:
-                    return
+                    pass
                 elif raw_prompt and raw_prompt in current_prompt:
-                    # Replace only the persona, preserving framework and plugin instructions.
+                    # 仅替换人格段，保留框架和其他插件的提示。
                     req.system_prompt = current_prompt.replace(
                         raw_prompt, dynamic_prompt, 1
                     )
                 else:
-                    logger.debug(
-                        "Configured persona template is absent; skipping injection"
-                    )
-            else:
-                # 第一次运行时可能没有动态人格，此时不做操作，让AstrBot使用默认加载的
-                pass
+                    logger.debug("请求中没有匹配的人格模板，跳过注入。")
+                    return
+                req._personaflow_injected_prompt = dynamic_prompt
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
@@ -1048,11 +1056,14 @@ class PersonaFlow(Star):
                 await db.rollback()
 
     async def write_astrbot_persona_prompt(self, base_persona_id, summary_text):
-        """Build the dynamic persona with impressions and optional full-text memory.
+        """从最新模板组装动态人格，仅在内容变化时保存。
 
-        Args:
-            base_persona_id: The configured persona template to update.
-            summary_text: The current relationship and impression text.
+        参数：
+            base_persona_id: 需要使用的人格名称。
+            summary_text: 当前完整的人物关系与印象。
+
+        返回：
+            本次组装的提示词；模板不存在或组装失败时返回 None。
         """
         try:
             # 1. 获取带有 {Impression} 的原始模板
@@ -1069,7 +1080,7 @@ class PersonaFlow(Star):
 
             else:
                 # 兜底：如果没有占位符，追加到末尾
-                logger.warning("模板中未找到 {Impression} 占位符，将追加到末尾。")
+                logger.debug("模板中未找到 {Impression} 占位符，将追加到末尾。")
                 formatted_prompt = raw_prompt + f"\n\n关于用户的印象：{summary_text}"
 
             if self._get_bool_config("enable_memory_summary", True):
@@ -1087,25 +1098,27 @@ class PersonaFlow(Star):
                 # Keep stored memories while removing the disabled prompt slot.
                 formatted_prompt = formatted_prompt.replace("{Memory}", "")
 
-            # 3. 保存到动态 ID 数据库中
-            await self.update_dynamic_persona(base_persona_id, formatted_prompt)
+            # 内容未变化时只读取；返回本次结果，不再读取可能被其他请求覆盖的旧副本。
+            stored_prompt = await self.get_dynamic_persona(base_persona_id + "动态")
+            if stored_prompt != formatted_prompt:
+                await self.update_dynamic_persona(base_persona_id, formatted_prompt)
+            return formatted_prompt
 
         except Exception as e:
             logger.error(f"替换人格提示词流程失败: {e}")
 
     async def get_dynamic_persona_prompt(self, persona_id):
-        """获取Prompt"""
-        dynamic_id = persona_id + "动态"
+        """获取基于当前人格模板和已有记忆组装的提示词。
 
-        local_prompt = await self.get_dynamic_persona(dynamic_id)
+        参数：
+            persona_id: 当前需要使用的人格名称。
 
-        if local_prompt:
-            return local_prompt
-        else:
-            # 如果本地没有，去主数据库读取原始模板作为兜底
-            logger.warning(f"动态人格 {dynamic_id} 尚未生成，降级读取原始人格。")
-            prompt, _, _ = self.get_persona_template(persona_id)
-            return prompt if prompt else ""
+        返回：
+            最新提示词；人格不存在或组装失败时返回空字符串，不使用历史副本。
+        """
+        current_impression = await self.get_sql_relationship_impression()
+        prompt = await self.write_astrbot_persona_prompt(persona_id, current_impression)
+        return prompt or ""
 
     async def terminate(self):
         """Stop startup synchronization before closing the database."""
