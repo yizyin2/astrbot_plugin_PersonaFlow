@@ -1,153 +1,172 @@
-# AstrBot Plugin: PersonaFlow (人格关系流)
+# PersonaFlow（人格关系流）1.1
 
-[![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-violet)](https://github.com/Soulter/AstrBot)
-[![Version](https://img.shields.io/badge/version-0.7(Beta)-blue)](https://github.com/Soulter/AstrBot)
+[![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-violet)](https://github.com/AstrBotDevs/AstrBot)
+[![Version](https://img.shields.io/badge/version-1.1-blue)](https://github.com/yizyin2/astrbot_plugin_PersonaFlow)
 
-**PersonaFlow** 是一个为 [AstrBot](https://github.com/Soulter/AstrBot) 设计的记忆插件。它通过 AI 自动总结用户与 Bot 之间的对话历史，生成动态的人物关系和印象，并将其注入到模型的人格设定中。
+PersonaFlow 为 AstrBot 提供人物印象、全文记忆和自动压缩功能。插件根据用户与机器人的对话生成关系、印象及长期记忆，再将这些内容加入指定人格的提示词，使新会话能够继续使用已保存的记忆。
 
-这意味着 Bot 能够“记住”每一个与它聊过天的人，知晓他们之间的关系（如朋友、死党、师生）以及对该用户的具体印象（如傲娇、博学、幽默），并在不同的群聊或会话中保持这种记忆。
+## 主要功能
 
-## ✨ 主要功能
+- **人物关系与印象**：按每位用户的对话次数触发总结，使用用户 ID 保存，支持跨群沿用。
+- **全文总结**：按所有生效会话的累计对话次数生成记忆，每次追加一条 Memory。
+- **灵活注入**：支持 `{Impression}` 和 `{Memory}` 占位符；缺少占位符时，对应内容追加到人格末尾。
+- **全文总结总开关**：关闭后停止生成和使用全文记忆，保留已有 Memory 数据，人物印象功能继续工作。
+- **可配置压缩**：自定义压缩触发条数和每批条数，将最旧的一批记忆合并成一条；压缩结果可以再次参与压缩。
+- **保留框架提示**：只替换请求中匹配的原始人格段，保留其他插件、技能和工具提示。
+- **并发保护**：消息保存与计数读取使用同一事务；记忆压缩串行执行，并在提交时校验待替换记录。
 
-* **自动印象总结**：根据设定的对话轮数，定期触发 LLM 分析用户历史，提炼关系与印象。
-* **动态人格注入**：支持 `{Impression}` 占位符，将最新的用户印象实时嵌入 System Prompt。
-* **全异步架构**：基于 `aiosqlite`，数据库操作不阻塞主线程，高并发更稳定。
-* **跨会话记忆**：基于 User ID (QQ号) 建立索引，实现跨群聊的统一记忆。
-* **管理指令 (New)**：支持通过指令查看所有已存储的印象或删除特定用户的记忆。
-* **格式优化 (New)**：优化了存入数据库的聊天记录格式，使 AI 总结更精准。
+## 安装与启用
 
-## 📦 安装方法
+1. 将插件目录放入 AstrBot 的 `data/plugins/astrbot_plugin_PersonaFlow/`，或通过插件管理安装本仓库。
+2. 重启 AstrBot 或重载插件，并在管理面板启用 PersonaFlow。
+3. 将 `personas_name` 设置为 AstrBot 中已有的人格名称，并在目标会话中选用该人格。
+4. 按需填写 `apply_to_group_chat`。填写群号后仅在这些群聊中记录和注入；留空时对全部群聊和私聊生效。
+5. 保存配置后重载插件，使启动同步重新生成动态人格。
 
-1.  将`astrbot_plugin_PersonaFlow`文件夹放置在 AstrBot 的`data/plugins/`目录下。
-2.  重启AstrBot。
-3.  在控制台或 WebUI 中启用插件。
+群聊筛选使用群号，支持 AstrBot 的独立会话模式。不同生效会话共享同一个插件数据库，全文总结会汇总这些会话的记录。
 
-## ⚙️ 配置说明 (Configuration)
+## 配置说明
 
-在 AstrBot 的管理面板或配置文件中，你需要设置以下参数：
+下表为插件默认值，已有安装以管理面板中保存的配置为准。
 
 | 配置项 | 类型 | 默认值 | 说明 |
-| :--- | :--- | :--- | :--- |
-| `personas_name` | String | `""` | **(必填)** 需要启用记忆功能的**人格ID**（System Prompt ID）。插件将基于此人格生成动态版本。 |
-| `summary_trigger_threshold` | Int | `5` | **触发阈值**。用户每进行多少次对话后，触发一次印象总结。 |
-| `summary_history_count` | Int | `20` | **历史回溯**。触发总结时，读取最近多少条聊天记录发给 LLM 进行分析。 |
-| `apply_to_group_chat` | List | `[]` | **生效群组**。填入群号列表。如果为空 `[]`，则默认对所有群聊/私聊生效（取决于插件加载逻辑）。 |
-| `database_path` | String | `./data/OSNpermemory.db` | 插件专用数据库的存储路径。 |
-| `summary_max_retries` | Int | `3` | LLM 总结失败时的最大重试次数。 |
-
-## 🎮 指令系统 (v0.7 新增)
-
-插件注册了 `osn` 指令组，用于管理记忆数据。
-
-| 指令 | 参数 | 说明 | 示例 |
 | --- | --- | --- | --- |
-| `/osn check` | 无 | 查看数据库中存储的所有用户印象、关系及对话统计。 | `/osn check` |
-| `/osn del` | `<User_ID>` | **彻底删除**指定用户的印象数据和聊天记录。 | `/osn del 123456` |
+| `personas_name` | String | `""` | 需要使用记忆的已有 AstrBot 人格名称。 |
+| `summary_trigger_threshold` | Int | `5` | 每位用户累计多少轮有效对话后触发人物印象总结。 |
+| `summary_history_count` | Int | `20` | 人物印象总结读取该用户最近多少条对话记录。 |
+| `apply_to_group_chat` | List | `[]` | 生效群号列表；为空时允许全部群聊和私聊。 |
+| `database_path` | String | `null` | 留空时使用 `data/plugin_data/astrbot_plugin_PersonaFlow/OSNpermemory.db`。 |
+| `summary_max_retries` | Int | `3` | 模型总结的最大尝试次数，包含首次调用。 |
+| `enable_memory_summary` | Bool | `true` | 全文总结总开关，同时控制生成、注入及向人物印象总结提供全文记忆。 |
+| `summary_memory_trigger_threshold` | Int | `20` | 所有生效会话累计多少轮有效对话后触发一次全文总结。 |
+| `summary_memory_history_count` | Int | `30` | 全文总结读取所有用户最近多少条对话记录。 |
+| `enable_memory_compaction` | Bool | `true` | 是否在新增全文总结后检查并执行自动压缩。 |
+| `memory_compaction_threshold` | Int | `30` | Memory **超过**此条数时触发压缩，等于时不压缩；至少为 2。 |
+| `memory_compaction_batch_size` | Int | `20` | 每次将最旧的多少条记忆合并成一条；至少为 2，且不超过压缩阈值。 |
 
-> **注意**：删除操作不可逆，执行后需使用`/new`或`/reset`指令以重置会话记忆。
+压缩参数无法转换为整数或小于 2 时，会回退为各自默认值；批量大于阈值时按阈值执行。全文总结的“对话轮数”和压缩的“Memory 条数”是两种不同的计数。
 
-## ⚠️ 核心用法：占位符设置
+例如，以下配置表示每 50 轮有效对话生成一次全文总结，超过 30 条 Memory 后，每次压缩最旧的 20 条：
 
-为了让 Bot 能够“说出”或“表现出”它对用户的印象，你必须在**原有人格（System Prompt）**中添加 `{Impression}` 占位符。
+```json
+{
+  "enable_memory_summary": true,
+  "summary_memory_trigger_threshold": 50,
+  "summary_memory_history_count": 50,
+  "enable_memory_compaction": true,
+  "memory_compaction_threshold": 30,
+  "memory_compaction_batch_size": 20
+}
+```
 
-### 步骤：
+## 人格提示词与占位符
 
-1.  找到你在 人格设定`personas_id` 中配置的人格。
-2.  编辑该人格的 System Prompt（系统提示词）。
-3.  在合适的位置加入 `{Impression}`。
-4.  修改本插件的插件配置，填写`生效的人格设定(system prompt)`,例：`小周周`。填写生效群聊：`12345678`
-
-### 示例 System Prompt：
+可在原始人格中指定记忆的插入位置：
 
 ```text
-你是一个叫“小周周”的AI助手，性格活泼可爱。
+你是一个叫“小周周”的 AI 助手，性格活泼可爱。
 
-小周周认识的人:
+你认识的人：
 {Impression}
 
-请根据上面的印象和关系，用符合你人设的语气回答用户的问题。
+以前的聊天记忆：
+{Memory}
+
+请根据这些关系和记忆，用符合人设的语气回答。
 ```
 
-**插件工作原理：**
-插件会自动将 `{Impression}` 替换为类似以下的内容：
-> `用户昵称(qq号),关系:朋友,印象:非常幽默，喜欢开玩笑。`
-**注意：** 如果你的 System Prompt 中没有 `{Impression}`，插件会自动将印象追加到提示词的**末尾**，但这可能不如手动指定位置效果好。
+- `{Impression}`：替换为全部已保存的人物关系与印象；没写时追加到人格末尾。
+- `{Memory}`：全文总结开启时替换为全部已保存的 Memory；没写时，将已有记忆追加到人格末尾的“历史对话记忆”段落。
+- 没有 Memory 且没写 `{Memory}` 时，不追加空段落；显式占位符在暂无记忆时显示“暂无记忆总结。”。
+- 全文总结关闭时，清空动态提示词中的 `{Memory}`，不再追加记忆，也不再将 Memory 提供给人物印象总结。已有数据保留，重新开启并重载插件后可恢复使用。
 
-## 🛠️ 技术细节
+插件每次从原始人格模板重新构建动态版本，不会反复堆叠追加段落。注入时保留框架的其他系统提示；如果非空请求中找不到匹配的人格模板，会跳过替换。因此请让会话使用 `personas_name` 对应的人格。
 
-1.  **数据库**：插件会自动创建数据库目录，用于存储用户印象表 (`Impression`)、聊天记录表 (`Message`) 和动态人格表 (`dynamic_personas`)。
-2. **数据流向**：
-* **读**：通过 `self.context.provider_manager.personas` 直接从 AstrBot 内存中读取基础人格模板（安全、快速）。
-* **写**：用户印象存储在独立的 `./data/OSNpermemory.db` 中，不污染 AstrBot 核心数据 (`data_v4.db`)。
-3.  **Hook 机制**：
-    *   `on_llm_request`: 拦截请求，将带有印象的动态 System Prompt 注入模型。
-    *   `on_llm_response`: 记录对话，触发总结逻辑。
-4. **并发安全**：
-* 使用 `asyncio.Lock` 保证数据库写入操作的原子性，防止竞争条件。
-* 数据库开启 `WAL (Write-Ahead Logging)` 模式，显著提升并发读写性能。
+## Memory 自动压缩
 
-## 🔧 工作原理 (Workflow)
+1. 一次全文总结成功生成并进入保存流程后，检查自动压缩开关及 Memory 条数。
+2. 超过 `memory_compaction_threshold` 时，读取最旧的 `memory_compaction_batch_size` 条记录。
+3. 调用当前会话的模型，将这一批记录合并成一条总结。
+4. 模型返回有效非空内容后，在事务中替换原记录。并发任务串行执行，过期批次不会再次写入；压缩失败时保留原记录。
+
+默认的 `30 / 20` 配置下，**31 条记忆会变成 12 条**：一条压缩总结和最新的 11 条原始记忆。每次触发只处理一批；插件启动时不会单独执行压缩。将两个参数都设为 `10` 可恢复原来的固定条数行为。
+
+压缩结果获得新 ID，但继承被压缩批次中最旧记录的时间。读取时按时间、ID 排序，因此通常保留在旧时间位置；相同时间戳的记录仍会按 ID 排序。压缩结果仍是普通 Memory，可以再次压缩。
+
+压缩限制的是记录数量，不是字数或 Token 数。模型压缩会概括内容，多次压缩可能逐渐省略细节。
+
+## 命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `/osn check` | 查看全部已保存的人物印象、关系和对话次数。 |
+| `/osn checkmem` | 查看全部 Memory 内容及记录时间。 |
+| `/osn del <用户ID>` | 删除该用户在 Impression、Message 表中的记录，并尝试刷新动态人格。 |
+
+`/osn del` 不会清理 Memory 总结中已经包含的该用户信息，也不会删除 AstrBot 自身的会话历史。`/new` 或 `/reset` 可以重置会话上下文，但不会清空插件的 Memory。
+
+这些命令目前没有内置管理员权限校验，也不受 `apply_to_group_chat` 的记录与注入范围限制。
+
+## 数据与处理流程
+
+插件使用独立 SQLite 数据库，并启用 WAL 模式。只有表结构初始化完成后，连接才会提供给其他协程。
+
+| 数据表 | 内容 |
+| --- | --- |
+| `Impression` | 用户名称、关系、印象及对话计数。 |
+| `Message` | 合并后的用户消息与模型回复。 |
+| `Memory` | 全文总结和压缩总结。 |
+| `dynamic_personas` | 插件生成的动态人格提示词及相关模板字段。 |
+
+原始人格从 AstrBot 内存读取，动态人格保存在插件数据库中。插件不会修改 AstrBot 的原始人格模板。
 
 ```mermaid
-graph TD
-    Start((LLM 结束钩子)) --> Save[存储聊天记录]
-    Save --> Check{当前对话次数 % 阈值 == 0}
-    
-    Check -- No --> End[结束流程]
-    Check -- Yes --> Summary[进入总结流程]
-    
-    Summary --> Input1[读取最近N条聊天记录]
-    Summary --> Input2[读取当前生效的 System Prompt]
-    Summary --> Input3[读取当前 Impression 表中的旧印象]
-    
-    Input1 --> Process[调用 LLM 进行总结<br/>llm_summary]
-    Input2 --> Process
-    Input3 --> Process
-    
-    Process --> Valid{LLM返回是否为有效JSON}
-    
-    Valid -- No --> Retry[重试 / 记录错误并结束]
-    Valid -- Yes --> Parse[解析 JSON]
-    
-    Parse --> UpdateDB[更新 Impression 表<br/>关系与印象]
-    Parse --> Concat[拼接新 Prompt]
-    
-    UpdateDB --> CheckID{动态 ID 是否存在?}
-    Concat --> CheckID
-    
-    CheckID -- No --> Init[从 AstrBot 内存读取原始模板<br/>并插入新记录]
-    CheckID -- Yes --> FinalUpdate[更新 dynamic_personas 表<br/>system_prompt 字段]
+flowchart TD
+    Request[模型请求] --> Match{群聊范围与人格模板匹配}
+    Match -->|是| Inject[替换人格段并保留其他系统提示]
+    Match -->|否| Keep[保留原请求]
+    Response[模型回复] --> Validate{范围允许且消息有效}
+    Validate -->|是| Save[事务保存消息并取得本轮计数]
+    Save --> Impression{达到个人总结阈值}
+    Impression -->|是| Relation[总结并更新人物印象]
+    Save --> Memory{全文总结开启且达到总轮数阈值}
+    Memory -->|是| Summarize[生成并追加全文记忆]
+    Summarize --> Compact{压缩开启且条数超过阈值}
+    Compact -->|是| Merge[串行压缩最旧的一批记忆]
+    Relation --> Build[重新构建动态人格]
+    Compact -->|否| Build
+    Merge --> Build
 ```
 
-## 📝 版本历史
-* **v0.7 (Beta)**
-    *   新增 `/osn check` 和 `/osn del` 管理指令。
-    *   优化聊天记录存储格式，提高总结准确度。
-    *   使用 `StarTools` 规范化数据存储路径。
-    *   修复了部分逻辑错误。
+## 版本历史
 
+### 1.1
 
-* **v0.6 (Beta)**
-    *   **重构**：迁移至 `aiosqlite`，实现全异步数据库操作。
-    *   **优化**：改为从 `provider_manager` 内存读取人格模板，修复文件锁冲突问题。
-    *   **性能**：增加 System Prompt 内存缓存与数据库 WAL 模式。
+- 全文总结总开关统一控制生成和使用记忆；缺少 `{Memory}` 时自动追加到人格末尾。
+- 开放 `memory_compaction_threshold` 和 `memory_compaction_batch_size`，默认值分别为 30、20，并校验有效范围。
+- 人格注入保留框架、技能和工具提示，避免覆盖整段系统提示词。
+- 消息保存、个人计数及总计数读取放入同一事务，修复并发下重复或漏触发总结。
+- 记忆压缩串行执行并校验待替换批次，避免重复写入。
+- 群号白名单兼容独立会话模式。
+- 数据库初始化成功后才公开连接，初始化失败或取消时清理连接；卸载时先停止启动同步任务。
+- 更新配置说明、命令行为说明和代码注释。
 
+### 1.0.0
 
-*   **v0.5.2(Beta)**:
-    *   使用 Ruff 格式化代码。
-    *   优化数据库操作，增加动态人格表。
-    *   修复总结逻辑和 JSON 解析。
+- 添加 Memory 表和独立的全文总结流程。
+- 启动时同步人格模板，跳过模型错误响应的消息存储。
 
+### 0.7 / 0.77
 
-*   **v0.5.1(Beta)**
-    *   增加总结关系llm的重试
+- 增加人物印象查询、删除命令，规范插件数据路径和聊天记录格式。
+- 移除早期缓存机制。
 
-## 👨‍💻 作者
+### 0.6 及更早版本
 
-*   **Plugin Author**: yizyin
-*   **Original Repo**: [AstrBot](https://github.com/Soulter/AstrBot)
+- 引入 aiosqlite、WAL 和动态人格存储，改进总结重试及 JSON 解析。
 
-## 📄 License
+## 作者与许可证
 
-
-MIT License
+- 作者：yizyin
+- 插件仓库：[yizyin2/astrbot_plugin_PersonaFlow](https://github.com/yizyin2/astrbot_plugin_PersonaFlow)
+- 许可证：GNU AGPL v3，详见 [LICENSE](LICENSE)。

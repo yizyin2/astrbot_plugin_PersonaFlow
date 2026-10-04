@@ -3,7 +3,7 @@
         "description": "生效的人格设定(system prompt)",
         "type": "string",
         "default": "",
-        "hint": "在system prompt中填入占位符\"{Impression}\"(必填)。此插件会更改数据库，使用前建议备份人格设定。"
+        "hint": "填写启用记忆的人格名称。将占位符{Impression}写入对应的人格设定的系统提示词；未写对应占位符时自动追加到人格末尾。"
     },
     "summary_trigger_threshold": {
         "description": "每用户对话多少次后触发总结(M)",
@@ -29,22 +29,46 @@
         "default": null,
         "hint": "插件数据库的存储路径"
     },
-    "summary_max_retries": {
+    "summary_max_retries":{
         "description": "内部模型总结失败时，最大重试次数",
         "type": "int",
         "default": 3,
         "hint": "LLM重试次数"
     },
+    "enable_memory_summary": {
+        "description": "启用全文总结与记忆注入",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后按阈值生成全文总结，将占位符 {Memory}写入人格设定的系统提示词；未写占位符时自动追加到人格末尾。关闭后停止生成和使用全文总结，已有的 Memory 数据保留，人物印象功能不受影响。保存配置后重载插件生效。"
+    },
     "summary_memory_trigger_threshold": {
         "description": "对话多少次后触发全文总结(M)",
         "type": "int",
-        "default": 50,
+        "default": 20,
         "hint": "对话达到此次数后会触发自动总结"
     },
     "summary_memory_history_count": {
         "description": "总结全文时获取的历史对话记录条数(N)",
         "type": "int",
-        "default": 50,
+        "default": 30,
         "hint": "触发总结时，获取的历史记录条数"
+    },
+    "enable_memory_compaction": {
+        "description": "是否启用 Memory 自动压缩",
+        "type": "bool",
+        "default": true,
+        "hint": "启用后，每次生成新全文总结时检查 Memory 数量；超过压缩阈值后，将指定批量的最旧记忆合并为1条。阈值和批量可在下方设置。"
+    },
+    "memory_compaction_threshold": {
+        "description": "Memory 自动压缩触发条数",
+        "type": "int",
+        "default": 30,
+        "hint": "Memory 记录超过此数量时触发压缩，等于此数量时不压缩。至少为2；无效值使用默认值30。例如设为30时，第31条记忆生成后触发。"
+    },
+    "memory_compaction_batch_size": {
+        "description": "Memory 每批压缩条数",
+        "type": "int",
+        "default": 20,
+        "hint": "每次将最旧的多少条记忆合并为1条。至少为2，且不超过压缩触发条数；无效值使用默认值20，超过阈值时按阈值执行。例如阈值30、批量20时，31条压缩后剩12条。"
     }
 }

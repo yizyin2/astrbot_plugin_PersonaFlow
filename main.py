@@ -10,14 +10,19 @@ import aiosqlite
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.api.star import Context, Star, register, StarTools
+from astrbot.api.star import Context, Star, StarTools, register
 
 """
-版本1.0.0 2026-2-10
-添加memory数据表，记录整个聊天记录，并在总结人物关系时调用，丰富总结内容。
-memory数据表与角色关系分开总结，默认每20轮对话总结一次，每次总结的内容直接添加到memory表中，而不是覆盖之前的内容。
-修复api报错内容会添加到message表中的bug。
-添加启动时自动同步人格模板到数据库的功能，修复修改人格模板后无法立即更新动态人格的问题。
+版本1.1 2026-10-04
+全文总结总开关统一控制记忆生成、人格注入，以及向人物印象总结提供全文记忆；关闭时保留已有数据。
+未填写 {Memory} 占位符时，自动将已有全文记忆追加到人格提示词末尾。
+开放 Memory 自动压缩阈值和每批条数，默认超过30条时将最旧的20条合并为1条。
+压缩结果继承最旧记录的时间，可再次参与压缩；压缩失败时保留原记录。
+人格注入仅替换匹配的原始人格段，保留框架、技能及工具等其他系统提示。
+消息保存与计数读取使用同一事务，修复并发下漏触发或重复触发总结的问题。
+压缩任务串行执行并校验待替换批次，避免并发重复写入记忆。
+群聊白名单改用群号匹配，兼容独立会话模式。
+数据库建表完成后才公开连接，初始化失败或取消时清理连接，卸载时先停止启动同步任务。
 """
 
 
@@ -25,7 +30,7 @@ memory数据表与角色关系分开总结，默认每20轮对话总结一次，
     "astrbot_plugin_PersonaFlow",
     "yizyin",
     "由ai自动总结人物关系到数据库，实现在不同群聊记住同一个人之间与ai的关系和印象，即使new对话也能继承之前的关系印象",
-    "v1.0.0",
+    "1.1",
 )
 class PersonaFlow(Star):
     def __init__(self, context: Context, config: dict):
@@ -36,14 +41,14 @@ class PersonaFlow(Star):
         self.db_path = self.config.get("database_path") or default_path
         self.db = None  # 数据库连接对象初始化为None
         self._db_lock = asyncio.Lock()
-        #更新人格模板到数据库的异步任务，避免阻塞插件启动
-        asyncio.create_task(self._sync_persona_on_startup())
+        self._memory_compaction_lock = asyncio.Lock()
         db_dir = os.path.dirname(self.db_path)
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
+        # 更新人格模板到数据库的异步任务，避免阻塞插件启动
+        self._startup_task = asyncio.create_task(self._sync_persona_on_startup())
 
         logger.info("人格关系流(PersonaFlow)加载成功! 数据库路径：" + self.db_path)
-
 
     async def _sync_persona_on_startup(self):
         """插件启动时同步人格模板到数据库"""
@@ -66,31 +71,94 @@ class PersonaFlow(Star):
         except Exception as e:
             logger.error(f"人格模板同步失败: {e}", exc_info=True)
 
+    def _get_int_config(self, key: str, default: int, min_value: int | None = None):
+        """读取整数配置，非法值回退到默认值。"""
+        raw_value = self.config.get(key, default)
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"配置 {key}={raw_value!r} 不是有效整数，使用默认值 {default}"
+            )
+            return default
+
+        if min_value is not None and value < min_value:
+            logger.warning(
+                f"配置 {key}={value} 小于最小值 {min_value}，使用默认值 {default}"
+            )
+            return default
+        return value
+
+    def _get_bool_config(self, key: str, default: bool):
+        """读取布尔配置，兼容手写字符串。"""
+        raw_value = self.config.get(key, default)
+        if isinstance(raw_value, bool):
+            return raw_value
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip().lower()
+            if normalized in (
+                "true",
+                "1",
+                "yes",
+                "on",
+                "enable",
+                "enabled",
+                "开启",
+                "启用",
+            ):
+                return True
+            if normalized in (
+                "false",
+                "0",
+                "no",
+                "off",
+                "disable",
+                "disabled",
+                "关闭",
+                "禁用",
+            ):
+                return False
+        if raw_value is None:
+            return default
+        return bool(raw_value)
 
     # ************数据库操作函数**********
     async def _get_db(self):
-        """懒加载获取数据库连接"""
+        """Return a connection only after schema initialization succeeds.
+
+        Returns:
+            The initialized SQLite connection.
+
+        Raises:
+            Exception: If connecting or initializing the schema fails.
+        """
         if self.db is None:
-            async with self._db_lock:  # 双重检查锁定
+            async with self._db_lock:
                 if self.db is None:
+                    db = None
                     try:
-                        self.db = await aiosqlite.connect(
+                        db = await aiosqlite.connect(
                             self.db_path, check_same_thread=False
                         )
-                        # 开启 WAL 模式以获得更好的并发性能
-                        await self.db.execute("PRAGMA journal_mode=WAL;")
-                        await self._init_tables(self.db)
-                        logger.info("数据库连接并初始化成功")
-                    except Exception as e:
-                        logger.error(f"数据库连接失败: {e}")
-                        if self.db:
-                            await self.db.close()
-                        self.db = None
-                        raise e
+                        await db.execute("PRAGMA journal_mode=WAL;")
+                        await self._init_tables(db)
+                        self.db = db
+                        logger.info("PersonaFlow database initialized")
+                    except (Exception, asyncio.CancelledError):
+                        if db is not None:
+                            await db.close()
+                        raise
         return self.db
 
     async def _init_tables(self, db):
-        """初始化表格"""
+        """Create the plugin tables and propagate initialization errors.
+
+        Args:
+            db: The unpublished database connection to initialize.
+
+        Raises:
+            Exception: If table creation or committing the schema fails.
+        """
         try:
             # 使用 execute 的上下文管理器，自动关闭 cursor
             await db.execute("""
@@ -132,8 +200,9 @@ class PersonaFlow(Star):
             """)
             await db.commit()
         except Exception as e:
-            logger.error(f"建表失败: {e}")
+            logger.error(f"Failed to initialize PersonaFlow tables: {e}")
             await db.rollback()
+            raise
 
     async def insert_user(self, qq_number, user_name):
         """插入用户信息到数据库"""
@@ -243,17 +312,17 @@ class PersonaFlow(Star):
         try:
             if qq_number in (None, "*", "all") and n == 0:
                 # 获取全部记录
-                sql = "SELECT message FROM Message ORDER BY chat_time DESC"
+                sql = "SELECT message FROM Message ORDER BY chat_time DESC, id DESC"
                 params = ()
             elif qq_number in (None, "*", "all"):
                 # 获取所有用户的记录
-                sql = "SELECT message FROM Message ORDER BY chat_time DESC LIMIT ?"
+                sql = "SELECT message FROM Message ORDER BY chat_time DESC, id DESC LIMIT ?"
                 params = (n,)
             else:
                 # 获取指定用户的记录
-                sql = "SELECT message FROM Message WHERE qq_number = ? ORDER BY chat_time DESC LIMIT ?"
+                sql = "SELECT message FROM Message WHERE qq_number = ? ORDER BY chat_time DESC, id DESC LIMIT ?"
                 params = (qq_number, n)
-            
+
             async with db.execute(sql, params) as cursor:
                 results = await cursor.fetchall()
             messages = [row[0] for row in results]
@@ -311,7 +380,7 @@ class PersonaFlow(Star):
         """获取全部记忆"""
         db = await self._get_db()
         try:
-            sql = "SELECT memory FROM Memory ORDER BY created_at DESC"
+            sql = "SELECT memory FROM Memory ORDER BY created_at DESC, id DESC"
             async with db.execute(sql) as cursor:
                 results = await cursor.fetchall()
             memories = [row[0] for row in results]
@@ -320,7 +389,73 @@ class PersonaFlow(Star):
         except Exception as e:
             logger.error(f"获取记忆失败: {e}")
             return []
-        
+
+    async def get_memory_count(self):
+        """获取 Memory 表记录数"""
+        db = await self._get_db()
+        try:
+            sql = "SELECT COUNT(*) FROM Memory"
+            async with db.execute(sql) as cursor:
+                result = await cursor.fetchone()
+            return result[0] if result else 0
+        except Exception as e:
+            logger.error(f"获取记忆数量失败: {e}")
+            return 0
+
+    async def get_oldest_memory_records(self, limit=10):
+        """获取最旧的 Memory 记录，用于压缩。"""
+        db = await self._get_db()
+        try:
+            sql = """
+                SELECT id, memory, created_at
+                FROM Memory
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+            """
+            async with db.execute(sql, (limit,)) as cursor:
+                return await cursor.fetchall()
+        except Exception as e:
+            logger.error(f"获取待压缩记忆失败: {e}")
+            return []
+
+    async def replace_memory_records(self, memory_ids, summary_text, created_at):
+        """Replace a complete, still-existing batch of memories atomically.
+
+        Args:
+            memory_ids: IDs of the records used to generate the summary.
+            summary_text: The condensed memory to store.
+            created_at: Timestamp of the oldest record in the batch.
+        """
+        if not memory_ids:
+            return
+
+        db = await self._get_db()
+        async with self._db_lock:
+            try:
+                placeholders = ",".join("?" for _ in memory_ids)
+                async with db.execute(
+                    f"DELETE FROM Memory WHERE id IN ({placeholders})",
+                    tuple(memory_ids),
+                ) as cursor:
+                    if cursor.rowcount != len(memory_ids):
+                        await db.rollback()
+                        logger.warning(
+                            "Memory compaction batch is stale; skipping replacement"
+                        )
+                        return
+                await db.execute(
+                    "INSERT INTO Memory (memory, created_at) VALUES (?, ?)",
+                    (summary_text, created_at),
+                )
+                await db.commit()
+                logger.info(f"已将 {len(memory_ids)} 条 Memory 压缩为 1 条")
+            except asyncio.CancelledError:
+                await db.rollback()
+                raise
+            except Exception as e:
+                logger.error(f"替换压缩记忆失败: {e}")
+                await db.rollback()
+
     async def get_all_dialogue_count(self):
         """获取总对话次数"""
         db = await self._get_db()
@@ -328,27 +463,19 @@ class PersonaFlow(Star):
             sql = "SELECT qq_number, dialogue_count FROM Impression"
             async with db.execute(sql) as cursor:
                 results = await cursor.fetchall()
-            dialogue_counts = {row[0]: row[1] for row in results}
+            dialogue_counts = {
+                row[0]: (row[1] if row[1] is not None else 0) for row in results
+            }
             total_count = sum(dialogue_counts.values())
             logger.info(f"总对话次数: {total_count}")
             return total_count
         except Exception as e:
             logger.error(f"获取对话次数失败: {e}")
             return 0
-        
+
     async def get_all_memory(self):
-        """获取全部记忆"""
-        db = await self._get_db()
-        try:
-            sql = "SELECT memory FROM Memory ORDER BY created_at DESC"
-            async with db.execute(sql) as cursor:
-                results = await cursor.fetchall()
-            memories = [row[0] for row in results]
-            logger.info(f"成功获取全部记忆，共 {len(memories)} 条")
-            return memories[::-1]  # 返回从旧到新的顺序
-        except Exception as e:
-            logger.error(f"获取记忆失败: {e}")
-            return []
+        """获取全部记忆（等同于 get_recent_memory）"""
+        return await self.get_recent_memory()
 
     # ************ 事件处理函数 **********
 
@@ -356,15 +483,19 @@ class PersonaFlow(Star):
     async def inject_dynamic_persona(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
-        current_session_id = str(event.get_session_id())
+        """Replace the configured persona without discarding other instructions.
 
-        # 6. 配置项强转字符串进行比对
-        active_session_ids = [
-            str(x) for x in self.config.get("apply_to_group_chat", [])
-        ]
+        Args:
+            event: The message event, used to check the group allowlist.
+            req: The outgoing request whose persona section may be replaced.
+        """
+        current_group_id = str(event.get_group_id() or "")
 
-        # 只要 session_id 中包含配置的群号即可匹配（兼容 "QQ号_群号" 等复合格式）
-        if not active_session_ids or any(sid in current_session_id for sid in active_session_ids):
+        active_group_ids = [str(x) for x in self.config.get("apply_to_group_chat", [])]
+
+        if not active_group_ids or (
+            current_group_id and current_group_id in active_group_ids
+        ):
             # 获取配置文件中的基础人格ID
             json_persona_id = self.config.get("personas_name", "")
             if not json_persona_id:
@@ -376,26 +507,40 @@ class PersonaFlow(Star):
             # logger.info(f"使用的system prompt:{dynamic_prompt}")
 
             if dynamic_prompt:
-                req.system_prompt = dynamic_prompt
-                # logger.debug(f"已应用动态人格: {target_dynamic_id}")
+                current_prompt = req.system_prompt or ""
+                raw_prompt, _, _ = self.get_persona_template(json_persona_id)
+                if not current_prompt:
+                    req.system_prompt = dynamic_prompt
+                elif dynamic_prompt in current_prompt:
+                    return
+                elif raw_prompt and raw_prompt in current_prompt:
+                    # Replace only the persona, preserving framework and plugin instructions.
+                    req.system_prompt = current_prompt.replace(
+                        raw_prompt, dynamic_prompt, 1
+                    )
+                else:
+                    logger.debug(
+                        "Configured persona template is absent; skipping injection"
+                    )
             else:
                 # 第一次运行时可能没有动态人格，此时不做操作，让AstrBot使用默认加载的
                 pass
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        # 获取系统群聊id
-        current_session_id = str(event.get_session_id())
-    
-        # 获取配置文件中的群聊id
-        active_session_ids = [
-            str(x) for x in self.config.get("apply_to_group_chat", [])
-        ]
+        """Store a response and trigger summaries from its atomic counter snapshot.
 
-        # logger.info(f"json会话id:{active_session_id}")
+        Args:
+            event: The originating user message.
+            resp: The model response to record.
+        """
+        current_group_id = str(event.get_group_id() or "")
 
-        # 只要 session_id 中包含配置的群号即可匹配（兼容 "QQ号_群号" 等复合格式）
-        if not active_session_ids or any(sid in current_session_id for sid in active_session_ids):
+        active_group_ids = [str(x) for x in self.config.get("apply_to_group_chat", [])]
+
+        if not active_group_ids or (
+            current_group_id and current_group_id in active_group_ids
+        ):
             # 提前定义变量，防止try块外引用报错
             new_name = "未知用户"
             qq_number = "0"
@@ -406,44 +551,53 @@ class PersonaFlow(Star):
                 user_message = event.get_message_str()
                 # 检查是否为错误响应
                 if resp.role == "err":
-                    logger.warning(f"LLM 返回错误响应，跳过存储。用户: {new_name}({qq_number})")
+                    logger.warning(
+                        f"LLM 返回错误响应，跳过存储。用户: {new_name}({qq_number})"
+                    )
                     return
                 # 防止空消息报错
                 if not user_message or not resp.completion_text:
-                    logger.debug(f"消息内容为空，跳过存储。用户: {new_name}({qq_number})")
+                    logger.debug(
+                        f"消息内容为空，跳过存储。用户: {new_name}({qq_number})"
+                    )
                     return
 
                 message = self.merge_AI_and_user_message(
                     user_message, resp.completion_text, new_name
                 )
 
-                # 1. 先存聊天记录
-                await self.add_persona_chat_history(qq_number, message)
-
-                # 2. 检查用户是否存在
-                user_exists = False
-                db_name = None
-
-                # 直接操作 db 避免反复获取连接
+                # Capture both counters in the same transaction as this message.
+                # Each threshold value then belongs to exactly one response.
                 db = await self._get_db()
-                sql = "SELECT name FROM Impression WHERE qq_number = ?"
-                async with db.execute(sql, (qq_number,)) as cursor:
-                    result = await cursor.fetchone()
-                    if result:
-                        user_exists = True
-                        db_name = result[0]
-
-                # 3. 读写分离逻辑
-                if user_exists:
-                    # 用户存在，检查是否改名
-                    if new_name != db_name:
-                        await self.update_user_name_only(qq_number, new_name)
-                else:
-                    # 用户不存在，插入
-                    await self.insert_user(qq_number, new_name)
-
-                # 4. 增加对话次数
-                await self.increment_dialogue_count(qq_number)
+                async with self._db_lock:
+                    try:
+                        await db.execute(
+                            "INSERT INTO Message (qq_number, message) VALUES (?, ?)",
+                            (qq_number, message),
+                        )
+                        await db.execute(
+                            """
+                            INSERT INTO Impression (qq_number, name, dialogue_count)
+                            VALUES (?, ?, 1)
+                            ON CONFLICT(qq_number) DO UPDATE SET
+                                name = excluded.name,
+                                dialogue_count = COALESCE(Impression.dialogue_count, 0) + 1
+                            """,
+                            (qq_number, new_name),
+                        )
+                        async with db.execute(
+                            "SELECT dialogue_count FROM Impression WHERE qq_number = ?",
+                            (qq_number,),
+                        ) as cursor:
+                            dialogue_count = (await cursor.fetchone())[0]
+                        async with db.execute(
+                            "SELECT COALESCE(SUM(dialogue_count), 0) FROM Impression"
+                        ) as cursor:
+                            total_dialogue_count = (await cursor.fetchone())[0]
+                        await db.commit()
+                    except (Exception, asyncio.CancelledError):
+                        await db.rollback()
+                        raise
 
             except Exception as e:
                 logger.error(f"处理用户数据失败: {e}", exc_info=True)
@@ -454,19 +608,13 @@ class PersonaFlow(Star):
             # logger.info(f"json_persona_id：{json_persona_id}")
             # 总结触发逻辑
             try:
-                summary_trigger_threshold = self.config.get(
-                    "summary_trigger_threshold", 5
+                summary_trigger_threshold = self._get_int_config(
+                    "summary_trigger_threshold", 5, min_value=1
                 )
-                qq_number = event.get_sender_id()
-                dialogue_count = await self.select_dialogue_count(qq_number)
-
                 if (
                     dialogue_count > 0
                     and dialogue_count % summary_trigger_threshold == 0
                 ):
-                    # 获取之前的印象文本
-                    await self.get_sql_relationship_impression()
-
                     # 执行 LLM 总结
                     summary_result = await self.llm_summary(
                         event, new_name, qq_number, json_persona_id
@@ -483,27 +631,35 @@ class PersonaFlow(Star):
                         )
             except Exception as e:
                 logger.error(f"总结触发流程失败: {e}")
-            
+
             # 记忆总结触发逻辑
             try:
-                summary_memory_trigger_threshold = self.config.get(
-                    "summary_memory_trigger_threshold", 20
-                )
-                total_dialogue_count = await self.get_all_dialogue_count()
+                if not self._get_bool_config("enable_memory_summary", True):
+                    logger.debug("全文总结功能已关闭，跳过 Memory 总结。")
+                else:
+                    summary_memory_trigger_threshold = self._get_int_config(
+                        "summary_memory_trigger_threshold", 20, min_value=1
+                    )
+                    logger.info(
+                        f"当前总对话数: {total_dialogue_count}, 记忆总结触发阈值: {summary_memory_trigger_threshold}"
+                    )
 
-                logger.info(f"当前总对话数: {total_dialogue_count}, 记忆总结触发阈值: {summary_memory_trigger_threshold}")
-
-                if (
-                    total_dialogue_count > 0
-                    and total_dialogue_count % summary_memory_trigger_threshold == 0
-                ):
-                    logger.info(f"触发记忆总结，当前总对话数: {total_dialogue_count}")
-                    await self.memory_summary(event, json_persona_id)
-                    await self.write_astrbot_persona_prompt(json_persona_id, await self.get_sql_relationship_impression())
+                    if (
+                        total_dialogue_count > 0
+                        and total_dialogue_count % summary_memory_trigger_threshold == 0
+                    ):
+                        logger.info(
+                            f"触发记忆总结，当前总对话数: {total_dialogue_count}"
+                        )
+                        await self.memory_summary(event, json_persona_id)
+                        await self.write_astrbot_persona_prompt(
+                            json_persona_id,
+                            await self.get_sql_relationship_impression(),
+                        )
             except Exception as e:
                 logger.error(f"记忆总结流程失败: {e}")
         else:
-            logger.info(f"系统获取到的群聊({current_session_id})与配置文件中的群聊({active_session_ids})不匹配，未执行代码")
+            logger.info("当前会话不在设置，未执行代码")
             pass
 
     async def llm_summary(
@@ -513,15 +669,17 @@ class PersonaFlow(Star):
         logger.info(f"开始调用大模型进行总结，用户: {user}")
 
         # 最大总结重试次数
-        max_retries = self.config.get("summary_max_retries", 3)
+        max_retries = self._get_int_config("summary_max_retries", 3, min_value=1)
 
         # 总结时获取对应用户聊天记录条数
-        summary_history_count = self.config.get("summary_history_count", 20)
+        summary_history_count = self._get_int_config(
+            "summary_history_count", 20, min_value=1
+        )
 
         user_message_history = await self.get_recent_chat_history(
             event.get_sender_id(), n=summary_history_count
         )
-        #logger.info(f"对话用户聊天记录:{user_Message_history}")
+        # logger.info(f"对话用户聊天记录:{user_Message_history}")
 
         # 获取数据库中的关系和印象
         pre_impression = await self.get_sql_relationship_impression()
@@ -529,7 +687,11 @@ class PersonaFlow(Star):
         # 获取当前的(动态)系统提示词
         dynamic_persona_prompt = await self.get_dynamic_persona_prompt(json_persona_id)
 
-        memory_list = await self.get_all_memory()
+        memory_list = (
+            await self.get_all_memory()
+            if self._get_bool_config("enable_memory_summary", True)
+            else []
+        )
 
         prompt = f"""
             请总结用户{user}与你(AI)的关系:\n
@@ -548,7 +710,7 @@ class PersonaFlow(Star):
             格式示例：\n
             {{"relationship": "朋友", "impression": "非常幽默"}}
             """
-        logger.info(prompt)
+        logger.debug(f"总结提示词: {prompt}")
 
         # 获取当前会话使用的聊天模型 ID
         for attempt in range(max_retries):
@@ -588,21 +750,28 @@ class PersonaFlow(Star):
 
         logger.error(f"连续 {max_retries} 次总结均失败，跳过本次更新。")
         return None
-    
+
     async def memory_summary(self, event: AstrMessageEvent, json_persona_id):
         """调用LLM进行全文总结"""
+        if not self._get_bool_config("enable_memory_summary", True):
+            return
+
         # 获取配置文件中指定的历史消息条数
-        memory_summary_history_count = self.config.get("memory_summary_history_count", 30)
-        message_history = await self.get_recent_chat_history(qq_number=None, n=memory_summary_history_count)
-        
+        memory_summary_history_count = self._get_int_config(
+            "summary_memory_history_count", 30, min_value=1
+        )
+        message_history = await self.get_recent_chat_history(
+            qq_number=None, n=memory_summary_history_count
+        )
+
         # 获取已有的记忆总结
         existing_memory_summary = await self.get_all_memory()
-        
+
         # 获取当前的(动态)系统提示词
         dynamic_persona_prompt = await self.get_dynamic_persona_prompt(json_persona_id)
-        
+
         # 最大总结重试次数
-        max_retries = self.config.get("summary_max_retries", 3)
+        max_retries = self._get_int_config("summary_max_retries", 3, min_value=1)
         prompt = f"""
             这是你已有的记忆：\n
             {existing_memory_summary}\n
@@ -632,8 +801,13 @@ class PersonaFlow(Star):
                 )
                 llm_output = llm_resp.completion_text
                 logger.info(f"记忆总结输出: {llm_output}")
+                # 检查输出是否为空
+                if not llm_output or not llm_output.strip():
+                    logger.warning("记忆总结输出为空，跳过存储。")
+                    break
                 # 将总结结果存入 Memory 表
-                await self.add_memory(llm_output)
+                await self.add_memory(llm_output.strip())
+                await self.compact_memory_if_needed(event, json_persona_id)
                 break
 
             except Exception as e:
@@ -641,7 +815,96 @@ class PersonaFlow(Star):
         else:
             logger.error(f"连续 {max_retries} 次总结均失败，不更新记忆。")
 
-        
+    async def compact_memory_if_needed(self, event: AstrMessageEvent, json_persona_id):
+        """Compact the configured batch when memory exceeds the configured threshold.
+
+        Args:
+            event: The event selecting the model provider.
+            json_persona_id: The configured base persona ID.
+        """
+        if not self._get_bool_config("enable_memory_compaction", True):
+            logger.debug("Memory 自动压缩已关闭。")
+            return
+
+        # Hold a separate lock across selection, LLM generation, and replacement.
+        # Ordinary database writes can continue while the model is running.
+        async with self._memory_compaction_lock:
+            threshold = self._get_int_config(
+                "memory_compaction_threshold", 30, min_value=2
+            )
+            batch_size = self._get_int_config(
+                "memory_compaction_batch_size", 20, min_value=2
+            )
+            if batch_size > threshold:
+                logger.warning(
+                    f"Memory compaction batch size {batch_size} exceeds threshold "
+                    f"{threshold}; limiting the batch to {threshold}"
+                )
+                batch_size = threshold
+            memory_count = await self.get_memory_count()
+            if memory_count <= threshold:
+                return
+
+            records = await self.get_oldest_memory_records(batch_size)
+            if len(records) < batch_size:
+                return
+
+            summary_text = await self.summarize_memory_records(
+                event, json_persona_id, records
+            )
+            if not summary_text:
+                logger.warning("Memory compaction failed; keeping original records")
+                return
+
+            memory_ids = [row[0] for row in records]
+            created_at = records[0][2]
+            await self.replace_memory_records(memory_ids, summary_text, created_at)
+
+    async def summarize_memory_records(
+        self, event: AstrMessageEvent, json_persona_id, records
+    ):
+        """调用 LLM 将多条 Memory 合并为一条。"""
+        memory_text = "\n".join(
+            f"{idx + 1}. {row[1]}" for idx, row in enumerate(records) if row[1]
+        )
+        if not memory_text:
+            return None
+
+        dynamic_persona_prompt = await self.get_dynamic_persona_prompt(json_persona_id)
+        max_retries = self._get_int_config("summary_max_retries", 3, min_value=1)
+        prompt = f"""
+            请将以下 {len(records)} 条长期记忆合并压缩为 1 条长期记忆：\n
+            {memory_text}\n
+            要求：\n
+            1. 保留关键事实、人物关系、偏好、承诺和重要上下文。\n
+            2. 删除重复、寒暄和无长期价值的内容。\n
+            3. 不要添加原文中没有的信息。\n
+            4. 严格输出一段纯文本，不要包含 Markdown 标记。
+            """
+
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    logger.info(f"正在进行第{attempt + 1}次 Memory 压缩重试...")
+                    await asyncio.sleep(1)
+
+                umo = event.unified_msg_origin
+                provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+                llm_resp = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    system_prompt=dynamic_persona_prompt,
+                    prompt=prompt,
+                )
+                llm_output = llm_resp.completion_text
+                if llm_output and llm_output.strip():
+                    logger.info("Memory 压缩总结成功")
+                    return llm_output.strip()
+
+                logger.warning(f"Memory 压缩输出为空，重试 {attempt + 1}/{max_retries}")
+            except Exception as e:
+                logger.error(f"第 {attempt + 1} 次 Memory 压缩调用大模型出错: {e}")
+
+        return None
 
     def merge_AI_and_user_message(self, user_messages, ai_messages, user_name):
         """合并用户和AI的消息记录"""
@@ -746,6 +1009,10 @@ class PersonaFlow(Star):
                     )
 
                     if template_prompt is None:
+                        await db.rollback()
+                        logger.error(
+                            f"无法获取基础人格 {base_persona_id}，已回滚动态人格更新事务。"
+                        )
                         return
 
                     # 将 Python 对象 (List/Dict) 序列化为 JSON 字符串
@@ -781,7 +1048,12 @@ class PersonaFlow(Star):
                 await db.rollback()
 
     async def write_astrbot_persona_prompt(self, base_persona_id, summary_text):
-        """逻辑整合函数"""
+        """Build the dynamic persona with impressions and optional full-text memory.
+
+        Args:
+            base_persona_id: The configured persona template to update.
+            summary_text: The current relationship and impression text.
+        """
         try:
             # 1. 获取带有 {Impression} 的原始模板
             raw_prompt, _, _ = self.get_persona_template(base_persona_id)
@@ -800,12 +1072,20 @@ class PersonaFlow(Star):
                 logger.warning("模板中未找到 {Impression} 占位符，将追加到末尾。")
                 formatted_prompt = raw_prompt + f"\n\n关于用户的印象：{summary_text}"
 
-            if "{Memory}" in formatted_prompt:
-                logger.info("模板中包含 {Memory} 占位符，正在替换为最新记忆总结...")
+            if self._get_bool_config("enable_memory_summary", True):
                 recent_memory = await self.get_recent_memory()
-                memory_summary_text = "\n".join(recent_memory) if recent_memory else "暂无记忆总结。"
-                formatted_prompt = formatted_prompt.replace("{Memory}", memory_summary_text)
-                # logger.info(f"记忆占位符替换成功,替换后:{formatted_prompt}")
+                memory_summary_text = (
+                    "\n".join(recent_memory) if recent_memory else "暂无记忆总结。"
+                )
+                if "{Memory}" in formatted_prompt:
+                    formatted_prompt = formatted_prompt.replace(
+                        "{Memory}", memory_summary_text
+                    )
+                elif recent_memory:
+                    formatted_prompt += f"\n\n历史对话记忆：\n{memory_summary_text}"
+            else:
+                # Keep stored memories while removing the disabled prompt slot.
+                formatted_prompt = formatted_prompt.replace("{Memory}", "")
 
             # 3. 保存到动态 ID 数据库中
             await self.update_dynamic_persona(base_persona_id, formatted_prompt)
@@ -828,14 +1108,22 @@ class PersonaFlow(Star):
             return prompt if prompt else ""
 
     async def terminate(self):
-        """插件卸载时关闭连接"""
-        if self.db:
-            try:
-                await self.db.close()
-                logger.info("PersonaFlow 数据库连接已关闭。")
-            except Exception as e:
-                logger.error(f"关闭数据库连接失败: {e}")
-
+        """Stop startup synchronization before closing the database."""
+        if not self._startup_task.done():
+            self._startup_task.cancel()
+        try:
+            await self._startup_task
+        except asyncio.CancelledError:
+            pass
+        async with self._db_lock:
+            if self.db:
+                try:
+                    await self.db.close()
+                    logger.info("PersonaFlow database connection closed")
+                except Exception as e:
+                    logger.error(f"Failed to close PersonaFlow database: {e}")
+                finally:
+                    self.db = None
 
         # ************* 指令部分 **********
 
@@ -859,14 +1147,14 @@ class PersonaFlow(Star):
                 return
 
             msg_list = ["📂 当前已存储的人物印象：", "=" * 20]
-            
+
             for row in rows:
                 uid = row[0]
                 name = row[1] if row[1] else "未知"
                 rel = row[2] if row[2] else "暂无"
                 imp = row[3] if row[3] else "暂无"
-                count = row[4]
-                
+                count = row[4] if row[4] is not None else 0
+
                 info = (
                     f"👤 用户: {name} ({uid})\n"
                     f"🔗 关系: {rel}\n"
@@ -875,7 +1163,7 @@ class PersonaFlow(Star):
                 )
                 msg_list.append(info)
                 msg_list.append("-" * 20)
-            
+
             # 避免消息过长，简单合并
             result_text = "\n".join(msg_list)
             yield event.plain_result(result_text)
@@ -897,33 +1185,41 @@ class PersonaFlow(Star):
         # 获取配置文件中的基础人格ID (用于后续更新 Prompt)
         json_persona_id = self.config.get("personas_name", "")
         if not json_persona_id:
-            yield event.plain_result("⚠️ 警告：配置文件中未设置 personas_name，仅删除数据，无法刷新动态人格。")
+            yield event.plain_result(
+                "⚠️ 警告：配置文件中未设置 personas_name，仅删除数据，无法刷新动态人格。"
+            )
 
         db = await self._get_db()
         user_name = "未知用户"
-        
+
         # 执行数据库删除操作 (在一个事务锁中完成)
         async with self._db_lock:
             try:
                 # 检查用户是否存在
-                async with db.execute("SELECT name FROM Impression WHERE qq_number = ?", (target_id,)) as cursor:
+                async with db.execute(
+                    "SELECT name FROM Impression WHERE qq_number = ?", (target_id,)
+                ) as cursor:
                     res = await cursor.fetchone()
-                
+
                 if not res:
                     yield event.plain_result(f"⚠️ 未找到 ID 为 {target_id} 的记录。")
                     return
-                
+
                 user_name = res[0]
 
                 # 删除印象表记录
-                await db.execute("DELETE FROM Impression WHERE qq_number = ?", (target_id,))
-                
+                await db.execute(
+                    "DELETE FROM Impression WHERE qq_number = ?", (target_id,)
+                )
+
                 # 删除聊天记录表记录
-                await db.execute("DELETE FROM Message WHERE qq_number = ?", (target_id,))
-                
+                await db.execute(
+                    "DELETE FROM Message WHERE qq_number = ?", (target_id,)
+                )
+
                 await db.commit()
                 logger.info(f"已从数据库删除用户 {user_name}({target_id}) 的所有数据")
-                
+
             except Exception as e:
                 await db.rollback()
                 logger.error(f"删除数据失败: {e}")
@@ -942,15 +1238,21 @@ class PersonaFlow(Star):
                 #    1. 读取原始模板
                 #    2. 替换 {Impression}
                 #    3. 更新数据库 dynamic_personas 表
-                await self.write_astrbot_persona_prompt(json_persona_id, new_full_impression)
-                
-                yield event.plain_result(f"✅ 成功！[{user_name}] ({target_id}) 已被遗忘，当前人格记忆已刷新。")
+                await self.write_astrbot_persona_prompt(
+                    json_persona_id, new_full_impression
+                )
+
+                yield event.plain_result(
+                    f"✅ 成功！[{user_name}] ({target_id}) 已被遗忘，当前人格记忆已刷新。"
+                )
 
             except Exception as e:
                 logger.error(f"刷新动态人格失败: {e}")
                 yield event.plain_result(f"⚠️ 数据已删除，但在刷新人格记忆时出错: {e}")
         else:
-            yield event.plain_result(f"✅ 数据已删除，但因未配置 personas_name，未刷新当前人格。")
+            yield event.plain_result(
+                "✅ 数据已删除，但因未配置 personas_name，未刷新当前人格。"
+            )
 
     @osn.command("checkmem")
     async def check_memory(self, event: AstrMessageEvent):
@@ -959,7 +1261,7 @@ class PersonaFlow(Star):
         """
         db = await self._get_db()
         try:
-            sql = "SELECT memory, created_at FROM Memory ORDER BY created_at DESC LIMIT 5"
+            sql = "SELECT memory, created_at FROM Memory ORDER BY created_at ASC"
             async with db.execute(sql) as cursor:
                 rows = await cursor.fetchall()
 
@@ -968,18 +1270,15 @@ class PersonaFlow(Star):
                 return
 
             msg_list = ["📂 当前已存储的记忆记录：", "=" * 20]
-            
+
             for row in rows:
                 mem = row[0] if row[0] else "无内容"
                 time = row[1] if row[1] else "未知时间"
-                
-                info = (
-                    f"🕒 时间: {time}\n"
-                    f"🧠 记忆内容: {mem}\n"
-                )
+
+                info = f"🕒 时间: {time}\n🧠 记忆内容: {mem}\n"
                 msg_list.append(info)
                 msg_list.append("-" * 20)
-            
+
             result_text = "\n".join(msg_list)
             yield event.plain_result(result_text)
 
