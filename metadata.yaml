@@ -2,5 +2,5 @@
 "display_name": "PersonaFlow（人格关系流）"
 "desc": "自动总结人物关系与全文记忆，支持跨会话记忆注入、全文总结开关和可配置的 Memory 自动压缩，保留框架系统提示。"
 "author": "yizyin"
-"version": "1.1.1"
+"version": "1.1.2"
 "repo": "https://github.com/yizyin2/astrbot_plugin_PersonaFlow"

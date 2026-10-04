@@ -23,6 +23,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 消息保存与计数读取使用同一事务，修复并发下漏触发或重复触发总结的问题。
 压缩任务串行执行并校验待替换批次，避免并发重复写入记忆。
 群聊白名单改用群号匹配，兼容独立会话模式。
+查看人物印象、查看全文记忆及删除用户记录的指令统一校验 AstrBot 管理员权限。
 数据库建表完成后才公开连接，初始化失败或取消时清理连接，卸载时先停止启动同步任务。
 """
 
@@ -1149,6 +1150,11 @@ class PersonaFlow(Star):
         """
         查看数据库中所有已保存的人物印象
         """
+        if not event.is_admin():
+            await event.send(event.plain_result("❌ 仅 AstrBot 管理员可以使用此指令。"))
+            event.stop_event()
+            return
+
         db = await self._get_db()
         try:
             sql = "SELECT qq_number, name, relationship, impression, dialogue_count FROM Impression"
@@ -1191,6 +1197,11 @@ class PersonaFlow(Star):
         删除指定用户的关系与记忆
         用法: /osn del <user_id>
         """
+        if not event.is_admin():
+            await event.send(event.plain_result("❌ 仅 AstrBot 管理员可以使用此指令。"))
+            event.stop_event()
+            return
+
         if not target_id:
             yield event.plain_result("❌ 请输入要删除的用户ID。例如: /osn del 123456")
             return
@@ -1272,6 +1283,11 @@ class PersonaFlow(Star):
         """
         查看memory表中所有记忆内容
         """
+        if not event.is_admin():
+            await event.send(event.plain_result("❌ 仅 AstrBot 管理员可以使用此指令。"))
+            event.stop_event()
+            return
+
         db = await self._get_db()
         try:
             sql = "SELECT memory, created_at FROM Memory ORDER BY created_at ASC"
