@@ -1,15 +1,68 @@
 {
+    "memory_profiles": {
+        "description": "多 Bot / 多人格记忆配置",
+        "type": "template_list",
+        "default": [],
+        "hint": "按 Bot 唯一 ID、人格名称及可选的机器人账号 ID 分配独立数据库和生效范围。多个账号共用适配器时须分别填写账号 ID。添加条目后，下方旧版人格、数据库路径、群聊配置不再生效；留空则保持旧版单库模式。保存后重载插件。",
+        "templates": {
+            "profile": {
+                "name": "Bot + 人格记忆配置",
+                "hint": "Bot ID + 人格 + 账号 ID 不可重复；同一 Bot ID 和人格不能同时配置空账号 ID 与指定账号 ID。不同条目不能共用同一个数据库文件。",
+                "display_item": "platform_id",
+                "items": {
+                    "platform_id": {
+                        "description": "Bot（必选）",
+                        "type": "string",
+                        "default": "",
+                        "hint": "从列表中选择 AstrBot 机器人管理里已配置的 Bot。列表在插件加载时生成，新增 Bot 后重载插件或刷新页面即可看到。"
+                    },
+                    "personas_name": {
+                        "description": "人格（必选）",
+                        "type": "string",
+                        "default": "",
+                        "hint": "从列表中选择 AstrBot 中已存在的人格，目标会话必须实际选用该人格。可在系统提示词中使用 {Impression} 和 {Memory}；未写时自动追加相应记忆。",
+                        "_special": "select_persona"
+                    },
+                    "bot_self_id": {
+                        "description": "机器人账号 ID（可选）",
+                        "type": "string",
+                        "default": "",
+                        "hint": "匹配事件的机器人账号 ID，例如机器人 QQ 号，与上方 Bot 唯一 ID 不同。留空匹配该适配器下所有账号，适用于一个适配器只接一个 Bot；多个账号共用同一适配器时，须为每个账号分别填写此项才能隔离。可用 /osn profile 查看。"
+                    },
+                    "database_path": {
+                        "description": "独立数据库路径",
+                        "type": "string",
+                        "default": "",
+                        "hint": "留空时按 Bot ID、人格名称及所填账号 ID 生成稳定路径，保存至 data/plugin_data/astrbot_plugin_PersonaFlow/profiles。建议自定义时填写绝对路径；旧库路径只能分配给一个条目。"
+                    },
+                    "apply_to_group_chat": {
+                        "description": "本条目生效的群聊",
+                        "type": "list",
+                        "default": [],
+                        "hint": "填写群号；留空允许全部群聊。仅影响本 Bot + 人格的记录和注入，私聊由下方开关单独控制。获准群聊在本条目内共享记忆。"
+                    },
+                    "enable_private_chat": {
+                        "description": "本条目允许私聊",
+                        "type": "bool",
+                        "default": false,
+                        "hint": "开启后本 Bot + 人格可在私聊中记录和使用记忆，并与本条目允许的群聊共享记忆。与群聊列表独立，默认关闭。"
+                    }
+                }
+            }
+        }
+    },
     "personas_name": {
-        "description": "生效的人格设定(system prompt)",
+        "description": "旧版单库模式：生效人格",
         "type": "string",
         "default": "",
-        "hint": "填写启用记忆的人格名称。将占位符{Impression}写入对应的人格设定的系统提示词；未写对应占位符时自动追加到人格末尾。"
+        "hint": "仅 memory_profiles 为空时生效。从列表中选择启用记忆的 AstrBot 人格；所有使用该人格的 Bot 共享旧库。可使用 {Impression} 和 {Memory} 占位符。",
+        "_special": "select_persona"
     },
     "summary_trigger_threshold": {
         "description": "每用户对话多少次后触发总结(M)",
         "type": "int",
         "default": 5,
-        "hint": "用户对话达到此次数后会触发自动总结"
+        "hint": "所有记忆配置共用此阈值，但各数据库独立计数。用户对话达到此次数后触发自动总结。"
     },
     "summary_history_count": {
         "description": "总结时获取的历史对话记录条数(N)",
@@ -18,18 +71,18 @@
         "hint": "触发总结时，从历史记录中提取对话用户N条聊天记录进行总结"
     },
     "apply_to_group_chat": {
-        "description": "生效的群聊",
+        "description": "旧版单库模式：生效群聊",
         "type": "list",
         "default": [],
-        "hint": "生效群聊"
+        "hint": "仅 memory_profiles 为空时生效。填写群号后仅允许指定群聊；留空允许全部群聊和私聊，保持旧版行为。"
     },
     "database_path": {
-        "description": "插件数据库的路径，不填则默认路径",
+        "description": "旧版单库模式：数据库路径",
         "type": "string",
         "default": null,
-        "hint": "插件数据库的存储路径"
+        "hint": "仅 memory_profiles 为空时生效。留空使用 data/plugin_data/astrbot_plugin_PersonaFlow/OSNpermemory.db。启用多配置不会自动复制、移动或删除旧库。"
     },
-    "summary_max_retries":{
+    "summary_max_retries": {
         "description": "内部模型总结失败时，最大重试次数",
         "type": "int",
         "default": 3,
@@ -45,7 +98,7 @@
         "description": "对话多少次后触发全文总结(M)",
         "type": "int",
         "default": 20,
-        "hint": "对话达到此次数后会触发自动总结"
+        "hint": "所有记忆配置共用此阈值，但各数据库独立累计本配置生效会话的对话次数，达到阈值后触发全文总结。"
     },
     "summary_memory_history_count": {
         "description": "总结全文时获取的历史对话记录条数(N)",
