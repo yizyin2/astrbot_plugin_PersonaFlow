@@ -1,4 +1,11 @@
 {
+    "enable": {
+        "description": "启用 PersonaFlow",
+        "type": "bool",
+        "default": true,
+        "hint": "总开关。其余设置（档案路由、群聊感知、独立上下文库、日志）都在插件详情页的「管理面板」里修改，保存即生效。",
+        "obvious_hint": true
+    },
     "memory_profiles": {
         "description": "多 Bot / 多人格记忆配置",
         "type": "template_list",
@@ -49,79 +56,91 @@
                     }
                 }
             }
-        }
+        },
+        "invisible": true
     },
     "personas_name": {
         "description": "旧版单库模式：生效人格",
         "type": "string",
         "default": "",
         "hint": "仅 memory_profiles 为空时生效。从列表中选择启用记忆的 AstrBot 人格；所有使用该人格的 Bot 共享旧库。可使用 {Impression} 和 {Memory} 占位符。",
-        "_special": "select_persona"
+        "invisible": true
     },
     "summary_trigger_threshold": {
         "description": "每用户对话多少次后触发总结(M)",
         "type": "int",
         "default": 5,
-        "hint": "所有记忆配置共用此阈值，但各数据库独立计数。用户对话达到此次数后触发自动总结。"
+        "hint": "所有记忆配置共用此阈值，但各数据库独立计数。用户对话达到此次数后触发自动总结。",
+        "invisible": true
     },
     "summary_history_count": {
         "description": "总结时获取的历史对话记录条数(N)",
         "type": "int",
         "default": 20,
-        "hint": "触发总结时，从历史记录中提取对话用户N条聊天记录进行总结"
+        "hint": "触发总结时，从历史记录中提取对话用户N条聊天记录进行总结",
+        "invisible": true
     },
     "apply_to_group_chat": {
         "description": "旧版单库模式：生效群聊",
         "type": "list",
         "default": [],
-        "hint": "仅 memory_profiles 为空时生效。填写群号后仅允许指定群聊；留空允许全部群聊和私聊，保持旧版行为。"
+        "hint": "仅 memory_profiles 为空时生效。填写群号后仅允许指定群聊；留空允许全部群聊和私聊，保持旧版行为。",
+        "invisible": true
     },
     "database_path": {
         "description": "旧版单库模式：数据库路径",
         "type": "string",
         "default": null,
-        "hint": "仅 memory_profiles 为空时生效。留空使用 data/plugin_data/astrbot_plugin_PersonaFlow/OSNpermemory.db。启用多配置不会自动复制、移动或删除旧库。"
+        "hint": "仅 memory_profiles 为空时生效。留空使用 data/plugin_data/astrbot_plugin_PersonaFlow/OSNpermemory.db。启用多配置不会自动复制、移动或删除旧库。",
+        "invisible": true
     },
     "summary_max_retries": {
         "description": "内部模型总结失败时，最大重试次数",
         "type": "int",
         "default": 3,
-        "hint": "LLM重试次数"
+        "hint": "LLM重试次数",
+        "invisible": true
     },
     "enable_memory_summary": {
         "description": "启用全文总结与记忆注入",
         "type": "bool",
         "default": true,
-        "hint": "开启后按阈值生成全文总结，将占位符 {Memory}写入人格设定的系统提示词；未写占位符时自动追加到人格末尾。关闭后停止生成和使用全文总结，已有的 Memory 数据保留，人物印象功能不受影响。保存配置后重载插件生效。"
+        "hint": "开启后按阈值生成全文总结，将占位符 {Memory}写入人格设定的系统提示词；未写占位符时自动追加到人格末尾。关闭后停止生成和使用全文总结，已有的 Memory 数据保留，人物印象功能不受影响。保存配置后重载插件生效。",
+        "invisible": true
     },
     "summary_memory_trigger_threshold": {
         "description": "对话多少次后触发全文总结(M)",
         "type": "int",
         "default": 20,
-        "hint": "所有记忆配置共用此阈值，但各数据库独立累计本配置生效会话的对话次数，达到阈值后触发全文总结。"
+        "hint": "所有记忆配置共用此阈值，但各数据库独立累计本配置生效会话的对话次数，达到阈值后触发全文总结。",
+        "invisible": true
     },
     "summary_memory_history_count": {
         "description": "总结全文时获取的历史对话记录条数(N)",
         "type": "int",
         "default": 30,
-        "hint": "触发总结时，获取的历史记录条数"
+        "hint": "触发总结时，获取的历史记录条数",
+        "invisible": true
     },
     "enable_memory_compaction": {
         "description": "是否启用 Memory 自动压缩",
         "type": "bool",
         "default": true,
-        "hint": "启用后，每次生成新全文总结时检查 Memory 数量；超过压缩阈值后，将指定批量的最旧记忆合并为1条。阈值和批量可在下方设置。"
+        "hint": "启用后，每次生成新全文总结时检查 Memory 数量；超过压缩阈值后，将指定批量的最旧记忆合并为1条。阈值和批量可在下方设置。",
+        "invisible": true
     },
     "memory_compaction_threshold": {
         "description": "Memory 自动压缩触发条数",
         "type": "int",
         "default": 30,
-        "hint": "Memory 记录超过此数量时触发压缩，等于此数量时不压缩。至少为2；无效值使用默认值30。例如设为30时，第31条记忆生成后触发。"
+        "hint": "Memory 记录超过此数量时触发压缩，等于此数量时不压缩。至少为2；无效值使用默认值30。例如设为30时，第31条记忆生成后触发。",
+        "invisible": true
     },
     "memory_compaction_batch_size": {
         "description": "Memory 每批压缩条数",
         "type": "int",
         "default": 20,
-        "hint": "每次将最旧的多少条记忆合并为1条。至少为2，且不超过压缩触发条数；无效值使用默认值20，超过阈值时按阈值执行。例如阈值30、批量20时，31条压缩后剩12条。"
+        "hint": "每次将最旧的多少条记忆合并为1条。至少为2，且不超过压缩触发条数；无效值使用默认值20，超过阈值时按阈值执行。例如阈值30、批量20时，31条压缩后剩12条。",
+        "invisible": true
     }
 }
