@@ -126,13 +126,17 @@ function profileBranch(profile, sessions, boot) {
 }
 
 // 把一个还没进档案的会话加进档案的生效范围；key 是它要去的上下文去向（可选）
-function joinProfile(s, profile, key) {
-  const r = s.resolved;
+async function joinProfile(s, profile, key) {
   if (profile.platform_id !== "*" && profile.platform_id !== s.platform_id)
     return toast(`${s.name || s.target_id} 是 Bot「${s.platform_id}」的会话，不能加入 Bot「${profile.platform_id}」的档案。`, true);
   // 只有确实记录到了这个会话的人格才拦；没触发过回复的会话人格未知，允许先加进来
-  if (s.persona && s.persona !== profile.personas_name)
-    return toast(`${s.name || s.target_id} 当前用的人格是「${s.persona}」，而这个档案是人格「${profile.personas_name}」。先在 AstrBot 里把这个会话的人格换成「${profile.personas_name}」，它才会走这个档案。`, true);
+  if (s.persona && s.persona !== profile.personas_name) {
+    const name = s.name || s.target_id;
+    if (!S.boot.personas.includes(profile.personas_name))
+      return toast(`AstrBot 里找不到人格「${profile.personas_name}」，${name} 没法切换过去。`, true);
+    const ok = await confirmBox(`${name} 现在用的人格是「${personaText(s.persona)}」${s.astr?.source_label ? `（来自${s.astr.source_label}）` : ""}，而这个档案是人格「${profile.personas_name}」。\n\n要把它的人格改成「${profile.personas_name}」并加入档案吗？这会修改 AstrBot 的会话规则，给这个会话强制指定人格；其他会话和配置文件不受影响，之后可以在这里取消。`, "改人格并加入", false);
+    if (!ok || !(await run(api.post("astr/persona", { key: s.key, persona: profile.personas_name })))) return;
+  }
   const next = JSON.parse(JSON.stringify(profile));
   const sk = sessionKeyOf(s);
   next.exclude_sessions = (next.exclude_sessions || []).filter((k) => k !== sk);
@@ -144,14 +148,17 @@ function joinProfile(s, profile, key) {
 
 // 默认去向节点上的"切换"菜单
 function defaultMenu(profile, keys, currentKey) {
-  const items = [{ label: "没有单独指定的会话，上下文存到", head: true }];
-  keys.filter((k) => k !== currentKey && k !== "isolated").forEach((k) => {
-    const { mode, pool } = parseKey(k);
-    items.push({ label: (mode === "shared" ? `上下文库「${pool}」` : MODE_LABEL[mode]) + " · " + BUCKET_INFO[mode][0], act: () => save(api.post("ctx/bind", { profile: profile.id, mode, pool })) });
-  });
-  items.push({ label: "新建一个上下文库…", act: () => go(`context/_new/${profile.id}`) });
-  return items;
+  return [{ label: "档案的默认去向", head: true },
+    ...ctxOptions(keys, currentKey, (k) => { const { mode, pool } = parseKey(k); save(api.post("ctx/bind", { profile: profile.id, mode, pool })); }),
+    { label: "新建上下文库", add: true, act: () => go(`context/_new/${profile.id}`) }];
 }
+
+// 上下文去向的选项：每个上下文库一项，加上"不接管"；正在用的那项打勾。"独立"只在正在用时才列出
+const ctxOptions = (keys, current, pick) => keys.filter((k) => k !== "isolated" || k === current).map((k) => {
+  const { mode, pool } = parseKey(k);
+  return { label: mode === "shared" ? pool : MODE_LABEL[mode], desc: mode === "shared" ? "上下文库 · 共用一份上下文" : BUCKET_INFO[mode][0],
+    ico: BUCKET_INFO[mode][1], kind: mode, on: k === current, act: () => pick(k) };
+});
 
 function looseLane(sessions, boot) {
   if (!sessions.length) return null;
@@ -166,7 +173,8 @@ function chip(s, profile, keys, boot) {
   const isGroup = s.type === "group";
   const r = s.resolved;
   const canSense = isGroup && (!s.platform_name || s.platform_name === "aiocqhttp");
-  const el = h("div", { class: "chip" + (isGroup ? " c-group" : " c-private"), draggable: true, title: profile ? "点击可以改上下文去向和群聊感知" : (r.reason || "没有进入任何档案") + "。拖到上面的档案里就能加入，点击有更多操作",
+  const el = h("div", { class: "chip" + (isGroup ? " c-group" : " c-private"), draggable: true, title: (profile ? "点击可以改上下文去向和群聊感知" : (r.reason || "没有进入任何档案") + "。拖到上面的档案里就能加入，点击有更多操作")
+      + (s.astr?.ok ? `\nAstrBot：人格「${personaText(s.astr.persona)}」来自${s.astr.source_label}，配置文件「${s.astr.conf_name}」` : ""),
     ondragstart: (e) => { drag = s; el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.key); document.body.classList.add("is-dragging"); },
     ondragend: () => { drag = null; el.classList.remove("dragging"); document.body.classList.remove("is-dragging"); document.querySelectorAll(".over").forEach((b) => b.classList.remove("over")); },
     onclick: (e) => { e.stopPropagation(); openMenu(el, menuItems(s, profile, keys, boot, canSense)); } },
@@ -184,11 +192,8 @@ function menuItems(s, profile, keys, boot, canSense) {
   if (profile) {
     const current = r.context_mode === "shared" ? "shared:" + r.context_pool.split("/").slice(1).join("/") : r.context_mode;
     items.push({ label: "上下文去向", head: true });
-    keys.filter((k) => k !== current && k !== "isolated").forEach((k) => {
-      const { mode, pool } = parseKey(k);
-      items.push({ label: mode === "shared" ? `用上下文库「${pool}」` : mode === "astrbot" ? "不接管（由 AstrBot 保存）" : "移到 " + MODE_LABEL[mode], act: () => moveTo(s, profile, k) });
-    });
-    items.push({ label: "新建一个上下文库…", act: () => go(`context/_new/${profile.id}`) });
+    items.push(...ctxOptions(keys, current, (k) => moveTo(s, profile, k)));
+    items.push({ label: "新建上下文库", add: true, act: () => go(`context/_new/${profile.id}`) });
     if (r.context_override) items.push({ label: "恢复为档案的默认去向", act: () => save(api.post("ctx/bind", { profile: profile.id, session: sessionKeyOf(s), mode: null })) });
     if (r.context_mode !== "astrbot") items.push({ label: "查看这份上下文", act: () => go("context/" + encodeURIComponent(r.context_pool)) });
     items.push({ label: "档案", head: true });
@@ -204,11 +209,18 @@ function menuItems(s, profile, keys, boot, canSense) {
     } });
   } else {
     items.push({ label: r.reason || (r.profile_id ? "不在档案的生效范围内" : "没有匹配的档案"), head: true });
-    boot.profiles.filter((p) => p.active && (p.platform_id === s.platform_id || p.platform_id === "*") && (!r.persona || p.personas_name === r.persona)).forEach((p) => {
-      items.push({ label: `加入「${profileName(p)}」的生效范围`, act: () => joinProfile(s, p) });
+    boot.profiles.filter((p) => p.active && (p.platform_id === s.platform_id || p.platform_id === "*")).forEach((p) => {
+      const swap = s.persona && p.personas_name !== s.persona;
+      items.push({ label: swap ? `改用人格「${p.personas_name}」并加入「${profileName(p)}」` : `加入「${profileName(p)}」的生效范围`, act: () => joinProfile(s, p) });
     });
     items.push({ label: "为它新建一个档案…", act: () => editProfile(null, { platform_id: s.platform_id, personas_name: r.persona || S.boot.personas[0] || "",
       apply_to_group_chat: s.type === "group" ? [s.target_id] : [], enable_private_chat: s.type !== "group" }) });
+  }
+  if (s.astr?.ok) {
+    const a = s.astr;
+    items.push({ label: "AstrBot 路由", head: true });
+    items.push({ label: `人格「${personaText(a.persona)}」· 来自${a.source_label}，点击修改…`, act: () => editAstrPersona(s) });
+    items.push({ label: `配置文件「${a.conf_name}」${a.conf_route ? (a.conf_exact ? " · 单独指定" : " · 按规则匹配") : ""}，点击修改…`, act: () => editAstrConf(s) });
   }
   if (canSense) {
     items.push({ label: "群聊感知", head: true });
@@ -220,10 +232,58 @@ function menuItems(s, profile, keys, boot, canSense) {
   return items;
 }
 
+// ================= AstrBot 自己的路由 =================
+
+const personaText = (name) => (!name ? "无" : name === "[%None]" ? "不使用人格" : name);
+
+function astrFacts(a) {
+  const row = (label, value, on) => h("div", { class: "row small" + (on ? "" : " muted"), style: "gap:8px" }, h("span", { style: "min-width:7em" }, label), h("b", null, value), on && tag("生效", "ok"));
+  return h("div", { class: "col", style: "gap:4px;margin:8px 0 12px" },
+    h("div", { class: "small muted" }, "AstrBot 按下面的顺序决定人格，排在前面的优先："),
+    row("① 会话规则", a.rule_persona ? personaText(a.rule_persona) : "未指定", a.source === "rule"),
+    row("② 当前对话", a.conv_persona ? personaText(a.conv_persona) : "未指定", a.source === "conversation"),
+    row("③ 配置文件", `${personaText(a.conf_persona)}（${a.conf_name}）`, a.source === "config"));
+}
+
+function editAstrPersona(s) {
+  const a = s.astr;
+  let value = a.rule_persona;
+  const options = [["", "不强制（跟随当前对话和配置文件）"], ...S.boot.personas.map((p) => [p, p])];
+  modal({ title: `${s.name || s.target_id} 的人格`, okText: "保存到 AstrBot",
+    body: h("div", null, astrFacts(a),
+      h("label", { class: "col", style: "gap:6px" }, h("span", null, "在会话规则里强制指定"), select(options, value, (v) => (value = v))),
+      h("p", { class: "small muted" }, "保存后会修改 AstrBot「会话管理」里这个会话的规则，只影响这一个会话。改完后它会按新的人格重新匹配档案。")),
+    onOk: async () => {
+      if (value === a.rule_persona) return true;
+      if (!(await run(api.post("astr/persona", { key: s.key, persona: value }), "已修改 AstrBot 的会话规则"))) return false;
+      refresh();
+    } });
+}
+
+function editAstrConf(s) {
+  const a = s.astr;
+  let value = a.conf_exact ? a.conf_id : "";
+  const options = [["", a.conf_exact ? "不单独指定（删掉这条路由）" : "不单独指定（保持现状）"], ...S.boot.confs.map((c) => [c.id, c.name])];
+  modal({ title: `${s.name || s.target_id} 的配置文件`, okText: "保存到 AstrBot",
+    body: h("div", null,
+      h("p", { class: "small" }, "现在走配置文件 ", h("b", null, a.conf_name), a.conf_route ? (a.conf_exact ? "，是给这个会话单独指定的。" : `，由路由规则 ${a.conf_route} 匹配到。`) : "，没有任何路由规则匹配它。"),
+      h("label", { class: "col", style: "gap:6px" }, h("span", null, "给这个会话单独指定配置文件"), select(options, value, (v) => (value = v))),
+      h("p", { class: "small muted" }, "保存后会修改 AstrBot「配置文件」页里的路由表。配置文件不只决定默认人格，还决定模型、回复方式等全部设置，换之前请确认那份配置是你想要的。")),
+    onOk: async () => {
+      if (value === (a.conf_exact ? a.conf_id : "")) return true;
+      if (!(await run(api.post("astr/conf", { key: s.key, conf_id: value }), "已修改 AstrBot 的配置文件路由"))) return false;
+      refresh();
+    } });
+}
+
 function openMenu(anchor, items) {
   closeMenu();
   const menu = h("div", { class: "pop" }, items.map((it) => it.head ? h("div", { class: "pop-head" }, it.label)
-    : h("a", { class: it.danger ? "danger" : "", onclick: () => { closeMenu(); it.act(); } }, it.label)));
+    : it.ico ? h("a", { class: `opt k-${it.kind}` + (it.on ? " on" : ""), onclick: () => { closeMenu(); if (!it.on) it.act(); } },
+        h("span", { class: "opt-ico" }, icon(it.ico)),
+        h("span", { class: "grow" }, h("b", null, it.label), h("small", null, it.desc)),
+        it.on && h("span", { class: "opt-check", title: "正在使用" }, icon("M5 12.5l4.5 4.5L19 7.5")))
+    : h("a", { class: (it.danger ? "danger" : "") + (it.add ? " add" : ""), onclick: () => { closeMenu(); it.act(); } }, it.add && h("span", { class: "add-plus" }, "＋"), it.label)));
   document.body.append(menu);
   const a = anchor.getBoundingClientRect(), m = menu.getBoundingClientRect();
   menu.style.left = Math.max(8, Math.min(a.left + scrollX, innerWidth - m.width - 12 + scrollX)) + "px";

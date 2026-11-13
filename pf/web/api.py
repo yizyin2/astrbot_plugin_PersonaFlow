@@ -12,6 +12,7 @@ from pathlib import Path
 from astrbot.api import logger
 from astrbot.api.web import error_response, file_response, json_response, request, stream_response
 
+from ..astr_route import AstrRouting, umo_of
 from ..context.service import resolve_binding, session_key_of
 from ..logbus import CATEGORY_LABELS
 from ..migrate import read_report
@@ -49,6 +50,7 @@ class WebApi:
     def __init__(self, plugin) -> None:
         self.p = plugin
         self._last_backup: dict[str, float] = {}
+        self.astr = AstrRouting(plugin.context)
 
     def register(self, context) -> None:
         register = getattr(context, "register_web_api", None)
@@ -64,6 +66,8 @@ class WebApi:
             ("sessions/refresh", self.sessions_refresh, "POST"),
             ("sessions/remove", self.session_remove, "POST"),
             ("route/test", self.route_test, "GET"),
+            ("astr/persona", self.astr_persona, "POST"),
+            ("astr/conf", self.astr_conf, "POST"),
             ("memory/stats", self.memory_stats, "GET"),
             ("memory/impressions", self.memory_impressions, "GET"),
             ("memory/impression/save", self.memory_impression_save, "POST"),
@@ -216,6 +220,7 @@ class WebApi:
             "meta": fields_for_panel(),
             "platforms": self._platforms(),
             "personas": self._personas(),
+            "confs": self.astr.confs(),
             "providers": self._providers(),
             "profiles": self._profiles(),
             "log_categories": CATEGORY_LABELS,
@@ -357,11 +362,14 @@ class WebApi:
         out = []
         for item in self.p.sessions.list():
             is_group = item["type"] == "group"
+            # 人格以 AstrBot 现在的路由为准；读不到时退回上次回复时记下的人格
+            astr = await self.astr.describe(umo_of(item))
+            persona = astr["persona"] if astr["ok"] else item.get("persona", "")
             resolved = self._resolve(
-                item["platform_id"], item.get("self_id", ""), item.get("persona", ""),
+                item["platform_id"], item.get("self_id", ""), persona,
                 item["target_id"] if is_group else "", "" if is_group else item["target_id"],
                 item.get("umo", ""))
-            out.append({**item, "resolved": resolved})
+            out.append({**item, "persona": persona, "resolved": resolved, "astr": astr})
         return {"sessions": out}
 
     @_api
@@ -401,6 +409,52 @@ class WebApi:
         self.p.sessions.remove(str(body.get("key") or ""))
         self.p.sessions.save()
         return {"ok": True}
+
+    def _session(self, key: str) -> dict:
+        item = self.p.sessions.sessions.get(key)
+        if item is None:
+            raise ValueError("会话不存在，刷新页面后再试")
+        return item
+
+    @_api
+    async def astr_persona(self):
+        """改 AstrBot 的会话规则：给一个会话强制指定人格，或取消强制。"""
+        body = await request.json(default={})
+        item = self._session(str(body.get("key") or ""))
+        persona = str(body.get("persona") or "").strip()
+        if persona and persona not in self._personas():
+            raise ValueError(f"AstrBot 里没有人格「{persona}」")
+        umo = umo_of(item)
+        before = await self.astr.describe(umo)
+        after = await self.astr.set_persona(umo, persona)
+        if after["persona"]:
+            item["persona"] = after["persona"]
+            self.p.sessions.save(force=True)
+        self.p.bus.event(
+            "settings",
+            f"改了 AstrBot 的会话规则：{item.get('name') or item['target_id']} 的人格 "
+            f"{before['persona'] or '无'} → {after['persona'] or '无'}"
+            + (f"（强制指定 {persona}）" if persona else "（取消强制指定）"),
+            session=umo, before=before, after=after)
+        return {"astr": after}
+
+    @_api
+    async def astr_conf(self):
+        """改 AstrBot 的配置文件路由：让一个会话走指定的配置文件，或删掉它单独的路由。"""
+        body = await request.json(default={})
+        item = self._session(str(body.get("key") or ""))
+        umo = umo_of(item)
+        before = await self.astr.describe(umo)
+        after = await self.astr.set_conf(umo, str(body.get("conf_id") or "").strip())
+        if after["persona"]:
+            item["persona"] = after["persona"]
+            self.p.sessions.save(force=True)
+        self.p.bus.event(
+            "settings",
+            f"改了 AstrBot 的配置文件路由：{item.get('name') or item['target_id']} "
+            f"{before['conf_name'] or '?'} → {after['conf_name'] or '?'}",
+            session=umo, before=before, after=after)
+        return {"astr": after}
 
     @_api
     async def route_test(self):

@@ -53,7 +53,12 @@ const relColor = (rel, alpha = 1) => `hsla(${hueOf(rel)}, 68%, 60%, ${alpha})`;
 
 function relationGraph(items, persona, pid) {
   if (!items.length) return h("p", { class: "muted" }, "还没有人物印象。和她聊过几轮之后，这里会画出她认识的人。");
-  const NS = "http://www.w3.org/2000/svg", W = 860, H = 620, cx = W / 2, cy = H / 2 - 14;
+  // 窄屏用一套更紧凑、接近正圆的布局，缩放后文字仍然看得清
+  const compact = matchMedia("(max-width: 640px)").matches;
+  const touch = matchMedia("(hover: none)").matches;
+  const NS = "http://www.w3.org/2000/svg", W = compact ? 440 : 860, H = compact ? 600 : 620, cx = W / 2, cy = H / 2 - 14;
+  const [R1, R2] = compact ? [112, 196] : [146, 236];
+  const [SX, SY] = compact ? [0.84, 1.08] : [1.38, 0.96];
   const svg = document.createElementNS(NS, "svg");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("class", "rg-svg");
@@ -65,22 +70,22 @@ function relationGraph(items, persona, pid) {
   el("feGaussianBlur", { stdDeviation: "7" }, glow);
 
   // 同心参考圈
-  [146, 236].forEach((r) => el("circle", { cx, cy, r, class: "rg-orbit" }));
+  [R1, R2].forEach((r) => el("ellipse", { cx, cy, rx: r * SX, ry: r * SY, class: "rg-orbit" }));
 
   const max = Math.max(...items.map((i) => i.dialogue_count), 1);
   const inner = items.slice(0, Math.min(7, items.length)), outer = items.slice(inner.length, inner.length + 14);
   const placed = [];
   const place = (list, radius, offset) => list.forEach((item, i) => {
     const angle = offset + (i / list.length) * Math.PI * 2;
-    placed.push({ item, x: cx + Math.cos(angle) * radius * 1.38, y: cy + Math.sin(angle) * radius * 0.96, angle });
+    placed.push({ item, x: cx + Math.cos(angle) * radius * SX, y: cy + Math.sin(angle) * radius * SY, angle });
   });
-  place(inner, 146, -Math.PI / 2);
-  place(outer, 236, -Math.PI / 2 + Math.PI / Math.max(outer.length, 1));
+  place(inner, R1, -Math.PI / 2);
+  place(outer, R2, -Math.PI / 2 + Math.PI / Math.max(outer.length, 1));
 
   const edges = el("g", {}), nodes = el("g", {});
   const tip = h("div", { class: "rg-tip" });
   placed.forEach(({ item, x, y, angle }, index) => {
-    const weight = Math.sqrt(item.dialogue_count / max), r = 13 + weight * 15, color = relColor(item.relationship);
+    const weight = Math.sqrt(item.dialogue_count / max), r = (compact ? 12 : 13) + weight * (compact ? 12 : 15), color = relColor(item.relationship);
     // 连线略带弧度，从中心向外由实到虚
     const mx = (cx + x) / 2 - Math.sin(angle) * 22, my = (cy + y) / 2 + Math.cos(angle) * 22;
     const edge = el("path", { d: `M${cx} ${cy} Q${mx} ${my} ${x} ${y}`, class: "rg-edge", stroke: color, "stroke-width": (1.2 + weight * 4.5).toFixed(1),
@@ -89,10 +94,11 @@ function relationGraph(items, persona, pid) {
     el("circle", { cx: x, cy: y, r: r + 5, fill: relColor(item.relationship, 0.18) }, g);
     el("circle", { cx: x, cy: y, r, fill: color, stroke: "rgba(255,255,255,.55)", "stroke-width": 1.5 }, g);
     el("text", { x, y: y + r * 0.36, "text-anchor": "middle", class: "rg-initial", "font-size": Math.max(11, r * 0.95) }, g, [...(item.name || item.qq_number)][0]);
-    const name = [...(item.name || item.qq_number)].slice(0, 7).join("");
+    const name = [...(item.name || item.qq_number)].slice(0, compact ? 5 : 7).join("");
     el("text", { x, y: y + r + 17, "text-anchor": "middle", class: "rg-name" }, g, name);
     if (item.relationship) el("text", { x, y: y + r + 31, "text-anchor": "middle", class: "rg-rel", fill: color }, g, [...item.relationship].slice(0, 8).join(""));
-    g.addEventListener("mouseenter", () => {
+    const show = () => {
+      svg.querySelectorAll(".rg-edge.hot").forEach((e) => e.classList.remove("hot"));
       edge.classList.add("hot");
       tip.replaceChildren(
         h("div", { class: "row" }, h("b", null, item.name || item.qq_number), h("span", { class: "tag", style: `background:${relColor(item.relationship, 0.2)};color:${color}` }, item.relationship || "未知关系"),
@@ -103,10 +109,20 @@ function relationGraph(items, persona, pid) {
       tip.style.left = `${Math.min(Math.max((x / W) * 100, 22), 78)}%`;
       tip.style.top = y > cy ? `${((y - r) / H) * 100}%` : `${((y + r + 36) / H) * 100}%`;
       tip.style.transform = y > cy ? "translate(-50%, calc(-100% - 10px))" : "translate(-50%, 6px)";
+      shown = g;
+    };
+    const hide = () => { edge.classList.remove("hot"); tip.classList.remove("on"); shown = null; };
+    g.addEventListener("mouseenter", () => { if (!touch) show(); });
+    g.addEventListener("mouseleave", () => { if (!touch) hide(); });
+    // 触屏没有悬停：第一次点显示印象，再点同一个人才跳到对话
+    g.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (touch && shown !== g) return show();
+      go(`memory/${pid}/messages/${encodeURIComponent(item.qq_number)}`);
     });
-    g.addEventListener("mouseleave", () => { edge.classList.remove("hot"); tip.classList.remove("on"); });
-    g.addEventListener("click", () => go(`memory/${pid}/messages/${encodeURIComponent(item.qq_number)}`));
   });
+  let shown = null;
+  svg.addEventListener("click", () => { if (shown) { svg.querySelectorAll(".rg-edge.hot").forEach((e) => e.classList.remove("hot")); tip.classList.remove("on"); shown = null; } });
 
   // 中心：人格
   el("circle", { cx, cy, r: 46, fill: "#7a6cf5", filter: "url(#rg-glow)", opacity: 0.55, class: "rg-pulse" });
@@ -137,13 +153,15 @@ async function memImpressions(pid) {
   async function load() {
     const data = await run(api.get("memory/impressions", { profile: pid, ...state }));
     if (!data) return;
-    box.replaceChildren(h("div", { class: "wrap" }, h("table", null,
-      h("tr", null, ["用户", "关系", "印象", "对话", ""].map((t) => h("th", null, t))),
+    // 只有"印象"一列吃掉剩余宽度，其余列按内容收紧
+    box.replaceChildren(h("div", { class: "wrap" }, h("table", { class: "imp-table" },
+      h("tr", null, [["用户", "imp-user"], ["关系", "imp-rel"], ["印象", "imp-text"], ["对话", "fit num"], ["", "fit"]].map(([t, c]) => h("th", { class: c }, t))),
       data.items.map((i) => h("tr", null,
-        h("td", { style: "white-space:nowrap" }, i.name, h("div", { class: "muted small" }, i.qq_number)),
-        h("td", null, i.relationship || h("span", { class: "muted" }, "—")), h("td", null, i.impression || h("span", { class: "muted" }, "—")),
-        h("td", null, i.dialogue_count),
-        h("td", { style: "white-space:nowrap" }, h("button", { class: "link", onclick: () => edit(i) }, "编辑"),
+        h("td", { class: "imp-user" }, h("div", { class: "imp-name" }, i.name || h("span", { class: "muted" }, "—")), h("div", { class: "muted small mono" }, i.qq_number)),
+        h("td", { class: "imp-rel" }, i.relationship || h("span", { class: "muted" }, "—")),
+        h("td", { class: "imp-text" }, i.impression || h("span", { class: "muted" }, "—")),
+        h("td", { class: "fit num" }, i.dialogue_count),
+        h("td", { class: "fit" }, h("button", { class: "link", onclick: () => edit(i) }, "编辑"),
           h("button", { class: "link", onclick: () => go(`memory/${pid}/messages/${i.qq_number}`) }, "对话"),
           h("button", { class: "link danger", onclick: async () => {
             if (await confirmBox(`忘掉 ${i.name}(${i.qq_number})？会删除他的印象和保存的对话记录；全文记忆里已经写进去的内容不会改。`, "删除")) {
@@ -216,7 +234,7 @@ async function memPrompt(pid) {
     h("div", { class: "row", style: "margin-bottom:8px" }, h("b", null, "人格：" + p.persona),
       tag("{Impression} " + (p.has_impression_slot ? "已指定位置" : "未写，追加到末尾"), p.has_impression_slot ? "ok" : "warn"),
       tag("{Memory} " + (p.has_memory_slot ? "已指定位置" : "未写，追加到末尾"), p.has_memory_slot ? "ok" : "warn")),
-    p.template ? h("div", { class: "grid", style: "grid-template-columns:1fr 1fr" },
+    p.template ? h("div", { class: "grid cols2" },
       h("div", null, h("div", { class: "small muted" }, `原始模板（${p.template.length} 字）`), h("pre", null, p.template)),
       h("div", null, h("div", { class: "small muted" }, `实际发给模型的人格（${p.rendered.length} 字）`), h("pre", null, p.rendered)))
       : h("p", { class: "muted" }, "AstrBot 里找不到这个人格。"));
@@ -391,7 +409,9 @@ async function poolView(info) {
     list.replaceChildren(...nodes);
     summary.textContent = `下次请求会带上 ${windowIds.size} 轮，约 ${windowChars} 字符`;
   }
-  async function load(older) {
+  // 对话从旧到新排，最新的在最下面。stick 为 true 时滚到最下面；加载更早的内容时保持眼前的位置不动
+  const toBottom = () => { const go = () => (scroller.scrollTop = scroller.scrollHeight); go(); requestAnimationFrame(go); setTimeout(go, 120); };
+  async function load(older, stick = false) {
     const [data, win] = await Promise.all([
       run(api.get("ctx/turns", { pool, before: older ? oldest : null, limit: 40, ...state })),
       run(api.get("ctx/window", { pool, source: state.source }))]);
@@ -401,10 +421,16 @@ async function poolView(info) {
     if (win) { windowIds = new Set(win.ids); windowChars = win.chars; }
     if (turns.length) oldest = turns[0].id;
     more.style.display = data.items.length < 40 ? "none" : "";
+    const fromBottom = scroller.scrollHeight - scroller.scrollTop;
     draw(data.last_mark);
+    if (stick) toBottom();
+    else if (older) scroller.scrollTop = scroller.scrollHeight - fromBottom;
   }
   const summary = h("span", { class: "muted small" });
   const more = h("button", { onclick: () => load(true) }, "加载更早的");
+  const scroller = h("div", { class: "card turns-scroll" }, more, list);
+  const refreshBtn = h("button", { title: "重新读取这个库，并跳到最新的对话", onclick: async () => {
+    refreshBtn.disabled = true; await load(false, true); refreshBtn.disabled = false; toast("已刷新"); } }, "刷新");
   const sources = [["", "全部来源"], ...info.source_list.map((s) => [s.umo, `${s.type === "group" ? "群" : "私聊"} ${s.name || s.id}（${s.turns}）`])];
   const sessions = (await api.get("sessions")).sessions.filter((s) => s.umo);
   const importBtn = h("button", { onclick: async () => {
@@ -417,10 +443,11 @@ async function poolView(info) {
     const result = await run(api.post("ctx/import", { pool, umo }));
     if (result) { toast(`导入 ${result.imported} 轮`); load(false); }
   } }, "导入历史");
-  await load(false);
+  await load(false, true);
+  setTimeout(toBottom, 0); // 这时列表还没挂到页面上，挂上之后再滚一次
   return h("div", null,
     h("div", { class: "card" }, h("div", { class: "row" }, h("b", null, (info.kind === "shared" ? "上下文库 · " : "独立上下文 · ") + info.name), tag(info.profile_name), summary,
-      h("span", { class: "right row" }, importBtn,
+      h("span", { class: "right row" }, refreshBtn, importBtn,
         h("button", { onclick: () => run(bridge.download("ctx/export", { pool }, "context.json")) }, "导出"),
         h("button", { onclick: async () => { if (await run(api.post("ctx/mark/add", { pool }), "已打断点，之后的请求从这里重新开始")) load(false); } }, "从现在重新开始"),
         h("button", { class: "danger", onclick: async () => { if (await confirmBox("清空这个库的全部对话和断点？无法恢复。", "清空")) { await run(api.post("ctx/pool/clear", { pool }), "已清空"); refresh(); } } }, "清空"),
@@ -429,8 +456,8 @@ async function poolView(info) {
       info.kind === "shared" && !info.users.default && !info.users.sessions && h("div", { class: "issue info", style: "margin:12px 0 0" },
         "这个上下文库还没有被使用。到「路由」页点会话选它，或在默认去向上点「切换」选它。"),
       h("div", { class: "row", style: "margin-top:10px" },
-        select(sources, "", (v) => { state.source = v; load(false); }),
-        h("input", { placeholder: "搜索内容或发言人", onchange: (e) => { state.q = e.target.value.trim(); load(false); } }),
+        select(sources, "", (v) => { state.source = v; load(false, true); }),
+        h("input", { placeholder: "搜索内容或发言人", onchange: (e) => { state.q = e.target.value.trim(); load(false, true); } }),
         h("span", { class: "muted small" }, "选一个来源可以预览「在那个会话里发起请求时」会带上哪些轮次。变灰的是断点之前的内容。"))),
-    h("div", { class: "card" }, more, list));
+    scroller);
 }

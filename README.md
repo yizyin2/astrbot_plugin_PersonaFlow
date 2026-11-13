@@ -1,7 +1,7 @@
 # PersonaFlow（人格关系流）2.0
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-violet)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue)](https://github.com/yizyin2/astrbot_plugin_PersonaFlow)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue)](https://github.com/yizyin2/astrbot_plugin_PersonaFlow)
 
 让 AstrBot 里的角色记得人、会看群、不同会话之间不失忆，并且全部在一个可视化面板里管理。
 
@@ -76,7 +76,14 @@ Bot  →  人格  →  记忆库（档案） →  上下文  →  群聊 / 私�
 
 档案是按**会话实际生效的人格**匹配的。AstrBot 决定人格的顺序是：自定义规则里给会话强制指定的人格 → 当前对话用 `/persona` 切换的人格 → 配置文件里的默认人格。
 
-所以想让某个群稳定地走某个档案，最好在 AstrBot 的「自定义规则」里给它指定人格；只靠 `/persona` 的话，`/new` 之后会掉回默认人格。
+所以想让某个群稳定地走某个档案，最好在会话规则里给它强制指定人格；只靠 `/persona` 的话，`/new` 之后会掉回默认人格。
+
+这一步可以直接在路由页完成，不用去翻 AstrBot 的设置：
+
+- 点会话卡片，菜单里的「AstrBot 路由」会显示它现在的人格来自哪一层、走的是哪份配置文件，点进去就能改。
+- 把人格不匹配的会话拖进档案时，面板会问你要不要把它的人格改成档案的人格，确认后一并改好。
+
+> 这两项操作会修改 AstrBot 自己的设置：改人格写的是「会话管理」里该会话的规则，改配置文件写的是「配置文件」页的路由表。插件只在你点了保存或确认之后才写，只影响这一个会话，不会改配置文件本身的内容，每次修改都会记进日志页。
 
 没进档案的会话，鼠标停在卡片上会显示原因。也可以在会话里以管理员身份发 `/osn profile` 查看。
 

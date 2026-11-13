@@ -21,7 +21,8 @@ export function currentPath() { return location.hash.replace(/^#\/?/, "").split(
 
 async function render() {
   if (S.cleanup) { try { S.cleanup(); } catch {} S.cleanup = null; }
-  const [name = "overview", ...rest] = currentPath();
+  const [first, ...rest] = currentPath();
+  const name = PAGES.some(([key]) => key === first) ? first : "overview"; // 没有地址或地址不认识时都算总览
   const nav = document.getElementById("nav");
   nav.replaceChildren(...PAGES.map(([key, label]) =>
     h("a", { class: key === name ? "on" : "", onclick: () => go(key) }, label)));
