@@ -128,8 +128,10 @@ class MemberCache:
         member = await self.get(group_key, user_id)
         if member is not None and (member.nickname or member.card):
             return member
-        last_failed = self._failed_lookups.get((group_key, user_id), 0.0)
-        if bot is not None and group_id and time.monotonic() - last_failed > _LOOKUP_RETRY_S:
+        # 没失败过就直接查。不能拿 0 当"上次失败时间"：monotonic 从开机算起，开机不到十分钟时会被当成刚失败过
+        last_failed = self._failed_lookups.get((group_key, user_id))
+        retry_ok = last_failed is None or time.monotonic() - last_failed > _LOOKUP_RETRY_S
+        if bot is not None and group_id and retry_ok:
             try:
                 info = await bot.call_action(
                     "get_group_member_info",

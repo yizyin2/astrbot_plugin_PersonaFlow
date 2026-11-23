@@ -1,7 +1,7 @@
 # PersonaFlow（人格关系流）2.0
 
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-violet)](https://github.com/AstrBotDevs/AstrBot)
-[![Version](https://img.shields.io/badge/version-2.1.0-blue)](https://github.com/yizyin2/astrbot_plugin_PersonaFlow)
+[![Version](https://img.shields.io/badge/version-2.1.1-blue)](https://github.com/yizyin2/astrbot_plugin_PersonaFlow)
 
 让 AstrBot 里的角色记得人、会看群、不同会话之间不失忆，并且全部在一个可视化面板里管理。
 

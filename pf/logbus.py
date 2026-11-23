@@ -1,16 +1,15 @@
 """插件日志总线：结构化事件 + 文本日志，写入内存环形缓冲和 SQLite，并推送给面板。
 
-文本日志靠挂在插件专属 logger 上的 Handler 收集，控制台输出不受影响；结构化事件
-由各模块调用 event() 写入，不进控制台。
+文本日志通过订阅 AstrBot 的日志代理（Dashboard 日志页用的同一个）收集，只留本插件的条目，
+控制台输出不受影响；结构化事件由各模块调用 event() 写入，不进控制台。
+按插件上架规范，日志一律经由 AstrBot 提供的接口，不自己挂日志处理器。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import time
-import traceback
 from collections import deque
 from pathlib import Path
 
@@ -53,19 +52,50 @@ def _level_name(level) -> str:
     return name if name in LEVELS else "INFO"
 
 
-class _BusHandler(logging.Handler):
-    def __init__(self, bus: "LogBus") -> None:
-        super().__init__(level=logging.DEBUG)
-        self.bus = bus
+def _find_broker():
+    """找到 AstrBot 的日志代理。先取 LogManager 记下的那个，取不到再顺着 logger 的处理器找。"""
+    try:
+        from astrbot.core import LogManager
 
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            data = {"module": record.module, "line": record.lineno}
-            if record.exc_info:
-                data["traceback"] = "".join(traceback.format_exception(*record.exc_info))
-            self.bus.event("log", record.getMessage(), level=record.levelname, **data)
-        except Exception:
-            pass
+        broker = getattr(LogManager, "_log_broker", None)
+        if broker is not None and hasattr(broker, "register"):
+            return broker
+    except Exception:
+        pass
+    try:
+        from astrbot.api import logger
+
+        node = logger
+        while node is not None:
+            for handler in getattr(node, "handlers", []):
+                broker = getattr(handler, "log_broker", None)
+                if broker is not None and hasattr(broker, "register"):
+                    return broker
+            node = getattr(node, "parent", None)
+    except Exception:
+        pass
+    return None
+
+
+def entry_from_broker(item: dict, plugin_name: str) -> tuple[str, str, dict] | None:
+    """日志代理里的一条 → (级别, 文本, 附加数据)；不是本插件的日志返回 None。"""
+    if not isinstance(item, dict) or item.get("type") == "trace":
+        return None
+    scope = (item.get("instrumentation_scope") or {}).get("name") or ""
+    if item.get("plugin_name") != plugin_name and scope != f"astrbot.plugin.{plugin_name}":
+        return None
+    attrs = item.get("attributes") or {}
+    data: dict = {}
+    path = str(attrs.get("code.file.path") or "")
+    if path:
+        data["module"] = Path(path).stem
+    if attrs.get("code.line.number") is not None:
+        data["line"] = attrs.get("code.line.number")
+    full = str(item.get("data") or "")
+    if "Traceback (most recent call last)" in full:
+        data["traceback"] = full[full.index("Traceback (most recent call last)"):]
+    message = str(item.get("body") or item.get("data") or "")
+    return str(item.get("level") or item.get("severity_text") or "INFO"), message, data
 
 
 class LogBus:
@@ -82,8 +112,9 @@ class LogBus:
         self._db: aiosqlite.Connection | None = None
         self._task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._handler: _BusHandler | None = None
-        self._logger: logging.Logger | None = None
+        self._broker = None
+        self._broker_queue: asyncio.Queue | None = None
+        self._broker_task: asyncio.Task | None = None
         self._last_cleanup = 0.0
 
     def configure(self, settings: dict) -> None:
@@ -130,17 +161,37 @@ class LogBus:
             except asyncio.QueueFull:
                 pass
 
-    def attach(self, logger: logging.Logger) -> None:
-        """把插件 logger 的文本日志也收进来。"""
+    def attach(self, plugin_name: str) -> bool:
+        """订阅 AstrBot 的日志代理，把本插件的文本日志也收进来。找不到代理时返回 False。"""
         self.detach()
-        self._handler = _BusHandler(self)
-        self._logger = logger
-        logger.addHandler(self._handler)
+        broker = _find_broker()
+        if broker is None:
+            return False
+        self._broker = broker
+        self._broker_queue = broker.register()
+        self._broker_task = asyncio.create_task(self._consume(plugin_name, self._broker_queue))
+        return True
+
+    async def _consume(self, plugin_name: str, queue: asyncio.Queue) -> None:
+        while True:
+            item = await queue.get()
+            try:
+                parsed = entry_from_broker(item, plugin_name)
+                if parsed is not None:
+                    level, message, data = parsed
+                    self.event("log", message, level=level, **data)
+            except Exception:
+                pass
 
     def detach(self) -> None:
-        if self._logger is not None and self._handler is not None:
-            self._logger.removeHandler(self._handler)
-        self._logger = self._handler = None
+        if self._broker_task is not None:
+            self._broker_task.cancel()
+        if self._broker is not None and self._broker_queue is not None:
+            try:
+                self._broker.unregister(self._broker_queue)
+            except Exception:
+                pass
+        self._broker = self._broker_queue = self._broker_task = None
 
     # ---------- 生命周期 ----------
 

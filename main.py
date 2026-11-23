@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import sys
 
 from astrbot.api import logger
@@ -88,7 +87,8 @@ class PersonaFlow(Star):
     async def initialize(self) -> None:
         await self.bus.start()
         try:
-            self.bus.attach(logging.getLogger(f"astrbot.plugin.{PLUGIN_NAME}"))
+            if not self.bus.attach(PLUGIN_NAME):
+                logger.debug("[PersonaFlow] 没找到 AstrBot 的日志代理，日志页只显示结构化事件")
         except Exception:
             pass
         if self._fresh_install:
