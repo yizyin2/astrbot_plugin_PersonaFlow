@@ -1,8 +1,8 @@
 name: astrbot_plugin_PersonaFlow
 display_name: PersonaFlow（人格关系流）
-desc: "人格记忆（人物印象、全文记忆、多 Bot 多人格独立库）+ 群聊感知（判断模型接管回复、群身份与群事件）+ 独立上下文库，带可视化管理面板"
-short_desc: "人格记忆、群聊感知与共享上下文，带管理面板"
+desc: "人格记忆（人物印象、全文记忆、多 Bot 多人格独立库）+ 档案路由 + 跨群聊和私聊的共享上下文库，带可视化管理面板。群聊感知请配合独立的 GroupSense 插件"
+short_desc: "人格记忆、档案路由与共享上下文，带管理面板"
 author: yizyin
-version: 2.1.1
+version: 3.0.3
 repo: https://github.com/yizyin2/astrbot_plugin_PersonaFlow
 astrbot_version: ">=4.29,<5"

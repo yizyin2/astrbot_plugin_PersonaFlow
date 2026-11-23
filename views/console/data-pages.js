@@ -1,5 +1,5 @@
-import { api, ago, bridge, confirmBox, fmtSize, fmtTime, h, modal, promptBox, run, select, tag, toast } from "./lib.js";
-import { S, activityTable, currentPath, go, profileName, progress, refresh, reloadBoot } from "./app.js";
+import { api, bridge, confirmBox, fmtSize, fmtTime, h, modal, run, select, tag, toast } from "./lib.js";
+import { S, currentPath, go, profileName, progress, refresh, reloadBoot } from "./app.js";
 
 const sideList = (items, current, onPick, empty) => h("div", { class: "card list" },
   items.length ? items.map((item) => h("a", { class: item.id === current ? "on" : "", onclick: () => onPick(item.id) }, item.label, item.sub && h("div", { class: "small muted" }, item.sub)))
@@ -143,7 +143,7 @@ async function memImpressions(pid) {
   const box = h("div", null);
   const edit = (item) => {
     const d = item ? { ...item } : { qq_number: "", name: "", relationship: "", impression: "", dialogue_count: 0 };
-    const f = (label, key, area) => h("label", { class: "field" }, h("span", { class: "name" }, label),
+    const f = (label, key, area) => h("div", { class: "field" }, h("span", { class: "name" }, label),
       area ? h("textarea", { value: d[key], oninput: (e) => (d[key] = e.target.value) })
         : h("input", { value: d[key], disabled: key === "qq_number" && !!item, type: key === "dialogue_count" ? "number" : "text", oninput: (e) => (d[key] = e.target.value) }));
     modal({ title: item ? "编辑人物印象" : "添加人物", okText: "保存",
@@ -240,104 +240,6 @@ async function memPrompt(pid) {
       : h("p", { class: "muted" }, "AstrBot 里找不到这个人格。"));
 }
 
-// ================= 群聊感知 =================
-
-export async function sensePage([key, tab = "records"]) {
-  await reloadBoot();
-  const { groups } = await api.get("sense/groups");
-  if (!key && groups.length) key = groups[0].group_key;
-  const group = groups.find((g) => g.group_key === key);
-  const side = sideList(groups.map((g) => ({ id: g.group_key, label: g.name || g.group_id,
-    sub: `${g.group_id} · ${g.count} 条 · ${g.managed ? "受管" : "未受管"}${g.muted ? " · 禁言中" : ""}` })),
-    key, (id) => go(`sense/${encodeURIComponent(id)}/${tab}`), "还没有群聊记录。到「路由」页给群打开群聊感知。");
-  let main = h("div", { class: "card" }, h("p", { class: "muted" }, "选择左侧的群。"));
-  if (group) {
-    const view = { records: senseRecords, members: senseMembers, judge: senseJudge, config: senseConfig }[tab] || senseRecords;
-    main = h("div", null,
-      h("div", { class: "card row" }, h("b", null, group.name || group.group_id), tag(group.managed ? "受管" : "未受管", group.managed ? "ok" : ""),
-        group.bot_role && tag("机器人：" + ({ owner: "群主", admin: "管理员" }[group.bot_role] || "普通群员")),
-        group.muted && tag(group.mute_until ? `禁言到 ${fmtTime(group.mute_until, false)}` : "全员禁言中", "warn"),
-        group.worker && h("span", { class: "muted small" }, `已判 ${group.worker.batches} 批，回复 ${group.worker.replies} 次，待判 ${group.worker.pending}`),
-        h("span", { class: "muted small right" }, group.last_decision)),
-      subtabs([["records", "群聊记录"], ["members", "成员身份"], ["judge", "判断历史"], ["config", "本群设置"]], tab, (t) => go(`sense/${encodeURIComponent(key)}/${t}`)),
-      await view(group));
-  }
-  return h("div", { class: "split" }, side, main);
-}
-
-async function senseRecords(group) {
-  const key = group.group_key;
-  const chat = h("div", { class: "chat" });
-  let oldest = null;
-  const bubble = (r) => {
-    if (r.kind === "notice") return h("div", { class: "msg sys" }, `#${r.alias} ${fmtTime(r.ts, false)}  ${r.content}`);
-    const who = [r.card || r.nickname || r.sender_id, r.role_label && tag(r.role_label, "acc"), r.title && tag(r.title),
-      r.at_bot && tag("@机器人", "warn"), r.reply_bot && tag("回复机器人", "warn"), r.recalled && tag("已撤回", "err")];
-    const el = h("div", { class: "msg" + (r.is_bot ? " bot" : "") + (r.recalled ? " recalled" : "") },
-      h("div", { class: "meta" }, `#${r.alias} ${fmtTime(r.ts)} `, who, " ", h("span", null, r.sender_id)), r.content);
-    r.media.filter((m) => m.has_file).forEach((m) => {
-      const img = h("img", { alt: m.caption || "图片", title: m.caption || "" });
-      el.append(img);
-      api.get("sense/thumb", { md5: m.md5 }).then((d) => d.url ? (img.src = d.url) : img.remove()).catch(() => img.remove());
-    });
-    return el;
-  };
-  async function load(older) {
-    const data = await run(api.get("sense/records", { key, before: older ? oldest : null, limit: 80 }));
-    if (!data) return;
-    const nodes = data.items.map(bubble);
-    if (older) { const height = chat.scrollHeight; chat.prepend(...nodes); chat.scrollTop = chat.scrollHeight - height; }
-    else { chat.replaceChildren(...nodes); chat.scrollTop = chat.scrollHeight; }
-    if (data.items.length) oldest = data.items[0].alias;
-    more.style.display = data.items.length < 80 ? "none" : "";
-  }
-  const more = h("button", { onclick: () => load(true) }, "加载更早的");
-  const card = h("div", { class: "card" }, h("div", { class: "row", style: "margin-bottom:8px" }, more,
-    h("button", { onclick: () => load(false) }, "刷新"),
-    h("span", { class: "muted small" }, "这就是判断模型和主模型看到的群聊记录；黄色的是群事件。"),
-    h("button", { class: "danger right", onclick: async () => {
-      if (await confirmBox("清除这个群在插件里保存的全部聊天记录？编号会继续递增。", "清除")) { await run(api.post("sense/clear", { key }), "已清除"); refresh(); } } }, "清除记录")), chat);
-  await load(false);
-  setTimeout(() => (chat.scrollTop = chat.scrollHeight), 0);
-  return card;
-}
-
-async function senseMembers(group) {
-  const { items } = await api.get("sense/members", { key: group.group_key });
-  return h("div", { class: "card" }, h("p", { class: "muted small" }, "从群消息和群事件里看到的成员信息。群主和管理员会在群聊记录里带上身份标记。"),
-    items.length ? h("div", { class: "wrap" }, h("table", null, h("tr", null, ["QQ 号", "昵称", "群名片", "身份", "头衔", "更新"].map((t) => h("th", null, t))),
-      items.map((m) => h("tr", null, h("td", null, m.user_id), h("td", null, m.nickname), h("td", null, m.card),
-        h("td", null, m.role_label ? tag(m.role_label, "acc") : h("span", { class: "muted" }, m.role === "member" ? "普通群员" : "未知")),
-        h("td", null, m.title), h("td", { class: "muted" }, ago(m.updated_at)))))) : h("p", { class: "muted" }, "还没有记录到成员。"));
-}
-
-async function senseJudge(group) {
-  const { items } = await api.get("logs", { category: "judge", session: group.group_key, limit: 200 });
-  return h("div", { class: "card" }, h("p", { class: "muted small" }, "每次判断的结论、理由和耗时。点一行看详情；更多筛选在「日志」页。"), activityTable(items));
-}
-
-async function senseConfig(group) {
-  const { settings, providers, override_keys } = S.boot;
-  const draft = { ...group.override };
-  const labels = { judge_provider_id: "判断模型", judge_extra_prompt: "额外判断准则", judge_context_count: "判断时参考的记录条数",
-    judge_with_images: "判断时附带图片", main_context_count: "注入主模型的记录条数", main_max_images: "注入主模型的原图数量" };
-  const control = (k) => {
-    const global = settings.sense[k];
-    if (k === "judge_provider_id") return select([["", `跟随全局（${global || "未配置"}）`], ...providers.map((p) => [p.id, p.id])], draft[k] || "", (v) => (draft[k] = v));
-    if (k === "judge_with_images") return select([["", `跟随全局（${global ? "是" : "否"}）`], ["true", "是"], ["false", "否"]], draft[k] === undefined ? "" : String(draft[k]), (v) => (draft[k] = v === "" ? "" : v === "true"));
-    if (k === "judge_extra_prompt") return h("textarea", { value: draft[k] || "", placeholder: global ? "跟随全局：" + global : "只对这个群生效的判断准则", oninput: (e) => (draft[k] = e.target.value) });
-    return h("input", { type: "number", value: draft[k] ?? "", placeholder: `跟随全局（${global}）`, oninput: (e) => (draft[k] = e.target.value === "" ? "" : Number(e.target.value)) });
-  };
-  return h("div", { class: "card" },
-    h("label", { class: "field" }, h("span", { class: "name" }, "群聊感知"), h("input", { type: "checkbox", checked: group.managed, onchange: async (e) => {
-      if (await run(api.post("sense/toggle", { platform_id: group.platform_id, group_id: group.group_id, managed: e.target.checked }), "已保存")) refresh(); } }),
-      h("span", { class: "hint" }, "打开后，这个群的每条消息都先由判断模型决定机器人要不要开口。")),
-    override_keys.map((k) => h("label", { class: "field" }, h("span", { class: "name" }, labels[k] || k), control(k))),
-    h("div", { class: "row", style: "margin-top:12px" }, h("button", { class: "primary", onclick: async () => {
-      if (await run(api.post("sense/override", { key: group.group_key, values: draft }), "已保存")) refresh(); } }, "保存本群设置"),
-      h("span", { class: "muted small" }, "留空的项跟随「设置 → 群聊感知」里的全局值。")));
-}
-
 // ================= 上下文库 =================
 
 function createPool(presetProfile) {
@@ -347,9 +249,9 @@ function createPool(presetProfile) {
   const input = h("input", { placeholder: "例如：日常、工作群", style: "width:100%" });
   modal({ title: "新建上下文库", okText: "创建", body: h("div", null,
     h("p", { class: "muted" }, "上下文库是一个共享池：指到同一个库的群和私聊共用一份对话上下文。创建后到「路由」页把会话或档案的默认去向选到它。"),
-    h("label", { class: "field" }, h("span", { class: "name" }, "属于哪个档案"), select(profiles.map((p) => [p.id, profileName(p)]), profile, (v) => (profile = v)),
+    h("div", { class: "field" }, h("span", { class: "name" }, "属于哪个档案"), select(profiles.map((p) => [p.id, profileName(p)]), profile, (v) => (profile = v)),
       h("span", { class: "hint" }, "上下文库跟着档案走：只有这个 Bot + 人格的会话能用它。")),
-    h("label", { class: "field" }, h("span", { class: "name" }, "名称"), input)),
+    h("div", { class: "field" }, h("span", { class: "name" }, "名称"), input)),
     onOk: async () => {
       const result = await run(api.post("ctx/pool/create", { profile, name: input.value.trim() }), "已创建");
       return result ? result.pool : false;

@@ -172,21 +172,19 @@ function looseLane(sessions, boot) {
 function chip(s, profile, keys, boot) {
   const isGroup = s.type === "group";
   const r = s.resolved;
-  const canSense = isGroup && (!s.platform_name || s.platform_name === "aiocqhttp");
-  const el = h("div", { class: "chip" + (isGroup ? " c-group" : " c-private"), draggable: true, title: (profile ? "点击可以改上下文去向和群聊感知" : (r.reason || "没有进入任何档案") + "。拖到上面的档案里就能加入，点击有更多操作")
+  const el = h("div", { class: "chip" + (isGroup ? " c-group" : " c-private"), draggable: true, title: (profile ? "点击可以改上下文去向" : (r.reason || "没有进入任何档案") + "。拖到上面的档案里就能加入，点击有更多操作")
       + (s.astr?.ok ? `\nAstrBot：人格「${personaText(s.astr.persona)}」来自${s.astr.source_label}，配置文件「${s.astr.conf_name}」` : ""),
     ondragstart: (e) => { drag = s; el.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", s.key); document.body.classList.add("is-dragging"); },
     ondragend: () => { drag = null; el.classList.remove("dragging"); document.body.classList.remove("is-dragging"); document.querySelectorAll(".over").forEach((b) => b.classList.remove("over")); },
-    onclick: (e) => { e.stopPropagation(); openMenu(el, menuItems(s, profile, keys, boot, canSense)); } },
+    onclick: (e) => { e.stopPropagation(); openMenu(el, menuItems(s, profile, keys, boot)); } },
     h("span", { class: "chip-kind" }, isGroup ? "群" : "私"),
     h("span", { class: "chip-name" }, s.name || s.target_id),
     h("span", { class: "chip-id" }, s.target_id),
-    canSense && h("span", { class: "chip-sense" + (r.managed ? " on" : ""), title: r.managed ? "群聊感知已开启：判断模型决定她要不要开口" : "群聊感知未开启" }, r.managed ? "感知" : "未感知"),
     r.context_override && h("span", { class: "chip-pin", title: "这个会话单独指定了上下文去向" }, "●"));
   return el;
 }
 
-function menuItems(s, profile, keys, boot, canSense) {
+function menuItems(s, profile, keys, boot) {
   const items = [];
   const r = s.resolved;
   if (profile) {
@@ -222,11 +220,6 @@ function menuItems(s, profile, keys, boot, canSense) {
     items.push({ label: `人格「${personaText(a.persona)}」· 来自${a.source_label}，点击修改…`, act: () => editAstrPersona(s) });
     items.push({ label: `配置文件「${a.conf_name}」${a.conf_route ? (a.conf_exact ? " · 单独指定" : " · 按规则匹配") : ""}，点击修改…`, act: () => editAstrConf(s) });
   }
-  if (canSense) {
-    items.push({ label: "群聊感知", head: true });
-    items.push({ label: r.managed ? "关闭群聊感知" : "开启群聊感知", act: () => save(api.post("sense/toggle", { platform_id: s.platform_id, group_id: s.target_id, managed: !r.managed })) });
-    items.push({ label: "查看群聊记录", act: () => go("sense/" + encodeURIComponent(`${s.platform_id}:${s.target_id}`)) });
-  }
   items.push({ label: `最近活动：${ago(s.last_seen)}`, head: true });
   items.push({ label: "不在这里显示（下次有消息会再出现）", act: () => save(api.post("sessions/remove", { key: s.key }), "已隐藏（不影响任何数据）") });
   return items;
@@ -251,7 +244,7 @@ function editAstrPersona(s) {
   const options = [["", "不强制（跟随当前对话和配置文件）"], ...S.boot.personas.map((p) => [p, p])];
   modal({ title: `${s.name || s.target_id} 的人格`, okText: "保存到 AstrBot",
     body: h("div", null, astrFacts(a),
-      h("label", { class: "col", style: "gap:6px" }, h("span", null, "在会话规则里强制指定"), select(options, value, (v) => (value = v))),
+      h("div", { class: "col", style: "gap:6px" }, h("span", null, "在会话规则里强制指定"), select(options, value, (v) => (value = v))),
       h("p", { class: "small muted" }, "保存后会修改 AstrBot「会话管理」里这个会话的规则，只影响这一个会话。改完后它会按新的人格重新匹配档案。")),
     onOk: async () => {
       if (value === a.rule_persona) return true;
@@ -267,7 +260,7 @@ function editAstrConf(s) {
   modal({ title: `${s.name || s.target_id} 的配置文件`, okText: "保存到 AstrBot",
     body: h("div", null,
       h("p", { class: "small" }, "现在走配置文件 ", h("b", null, a.conf_name), a.conf_route ? (a.conf_exact ? "，是给这个会话单独指定的。" : `，由路由规则 ${a.conf_route} 匹配到。`) : "，没有任何路由规则匹配它。"),
-      h("label", { class: "col", style: "gap:6px" }, h("span", null, "给这个会话单独指定配置文件"), select(options, value, (v) => (value = v))),
+      h("div", { class: "col", style: "gap:6px" }, h("span", null, "给这个会话单独指定配置文件"), select(options, value, (v) => (value = v))),
       h("p", { class: "small muted" }, "保存后会修改 AstrBot「配置文件」页里的路由表。配置文件不只决定默认人格，还决定模型、回复方式等全部设置，换之前请确认那份配置是你想要的。")),
     onOk: async () => {
       if (value === (a.conf_exact ? a.conf_id : "")) return true;
@@ -361,8 +354,7 @@ function routeTester(boot) {
         out.replaceChildren(h("div", { class: "rt-result" },
           h("div", { class: "row" },
             tag(r.profile_id ? "档案：" + r.profile_name : "没有档案", r.profile_id && r.in_scope ? "ok" : "warn"),
-            tag("上下文：" + MODE_LABEL[r.context_mode] + (r.context_pool ? "（" + r.context_pool.split("/").slice(1).join("/") + "）" : ""), r.context_mode === "astrbot" ? "" : "acc"),
-            f.group_id && tag("群聊感知：" + (r.managed ? "受管" : "不受管"), r.managed ? "ok" : "")),
+            tag("上下文：" + MODE_LABEL[r.context_mode] + (r.context_pool ? "（" + r.context_pool.split("/").slice(1).join("/") + "）" : ""), r.context_mode === "astrbot" ? "" : "acc")),
           h("ol", { class: "muted small" }, r.steps.map((s) => h("li", null, s)))));
       } }, "测试")), out);
 }
@@ -378,11 +370,11 @@ export function editProfile(profile, preset = {}) {
   if (p.platform_id && !platforms.some(([v]) => v === p.platform_id)) platforms.push([p.platform_id, p.platform_id + "（当前不存在）"]);
   const personas = boot.personas.map((x) => [x, x]);
   if (p.personas_name && !boot.personas.includes(p.personas_name)) personas.push([p.personas_name, p.personas_name + "（当前不存在）"]);
-  const field = (name, control, hint) => h("label", { class: "field" }, h("span", { class: "name" }, name), control, hint && h("span", { class: "hint" }, hint));
+  const field = (name, control, hint) => h("div", { class: "field" }, h("span", { class: "name" }, name), control, hint && h("span", { class: "hint" }, hint));
   const text = (key, placeholder) => h("input", { value: p[key], placeholder, oninput: (e) => (p[key] = e.target.value) });
   const poolRow = h("div", { class: "row", style: (p.context.mode === "shared" ? "" : "display:none;") + "margin-top:8px" },
     select((p.context.pools?.length ? p.context.pools : [p.context.pool]).map((x) => [x, "上下文库 · " + x]), p.context.pool, (v) => (p.context.pool = v)),
-    h("label", { class: "row", style: "gap:6px" }, h("input", { type: "checkbox", checked: p.context.private_visible_in_groups, onchange: (e) => (p.context.private_visible_in_groups = e.target.checked) }), "私聊内容对群聊可见"));
+    h("div", { class: "row", style: "gap:6px" }, h("input", { type: "checkbox", checked: p.context.private_visible_in_groups, onchange: (e) => (p.context.private_visible_in_groups = e.target.checked) }), "私聊内容对群聊可见"));
   const modes = [["astrbot", "不接管", "对话历史仍由 AstrBot 保存"], ["shared", "使用上下文库", "范围内的群和私聊共用库里的一份上下文"]];
   if (p.context.mode === "isolated") modes.push(["isolated", "独立（旧选项）", "每个会话各一份，存在插件库里"]);
   const seg = h("div", { class: "seg" }, modes.map(([value, label, desc]) => h("a", { class: p.context.mode === value ? "on" : "", onclick: (e) => {

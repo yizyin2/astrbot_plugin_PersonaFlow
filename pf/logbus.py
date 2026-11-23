@@ -19,12 +19,8 @@ LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
 CATEGORY_LABELS = {
     "log": "文本日志",
     "route": "路由",
-    "judge": "判断",
-    "inject": "注入",
-    "reply": "回复",
     "memory": "人格记忆",
     "context": "上下文库",
-    "notice": "群事件",
     "settings": "设置",
     "error": "错误",
 }
@@ -317,6 +313,24 @@ class LogBus:
                 data = {}
             out.append({"id": id_, "ts": ts, "level": lvl, "category": cat,
                         "session": sess, "message": msg, "data": data})
+        return out
+
+    async def since(self, category: str, ts: float) -> list[dict]:
+        """某个类别在 ts 之后的全部条目（只取会话和附加数据），给总览页做统计。"""
+        await self.flush()
+        if self._db is None:
+            return []
+        cur = await self._db.execute(
+            "SELECT ts, session, data_json FROM logs WHERE category = ? AND ts >= ? ORDER BY id DESC",
+            (category, ts),
+        )
+        out = []
+        for ts_, session, data_json in await cur.fetchall():
+            try:
+                data = json.loads(data_json or "{}")
+            except ValueError:
+                data = {}
+            out.append({"ts": ts_, "session": session, "data": data})
         return out
 
     def recent(self, limit: int = 30, categories: tuple[str, ...] | None = None) -> list[dict]:

@@ -17,11 +17,11 @@ from ..context.service import resolve_binding, session_key_of
 from ..logbus import CATEGORY_LABELS
 from ..migrate import read_report
 from ..paths import PLUGIN_NAME, VERSION
-from ..sense.service import GROUP_OVERRIDE_KEYS
 from ..settings import CONTEXT_MODES, fields_for_panel, normalize_profile, profile_db_path
 
 _BACKUP_INTERVAL_S = 600
 _BACKUP_KEEP = 5
+SENSE_PLUGIN = "astrbot_plugin_GroupSense"
 
 
 def _api(func):
@@ -80,13 +80,6 @@ class WebApi:
             ("memory/prompt", self.memory_prompt, "GET"),
             ("memory/summarize", self.memory_summarize, "POST"),
             ("memory/compact", self.memory_compact, "POST"),
-            ("sense/groups", self.sense_groups, "GET"),
-            ("sense/records", self.sense_records, "GET"),
-            ("sense/members", self.sense_members, "GET"),
-            ("sense/thumb", self.sense_thumb, "GET"),
-            ("sense/toggle", self.sense_toggle, "POST"),
-            ("sense/override", self.sense_override, "POST"),
-            ("sense/clear", self.sense_clear, "POST"),
             ("ctx/pools", self.ctx_pools, "GET"),
             ("ctx/turns", self.ctx_turns, "GET"),
             ("ctx/window", self.ctx_window, "GET"),
@@ -152,14 +145,12 @@ class WebApi:
         issues = []
         if not self.p.enabled:
             issues.append({"level": "warn", "text": "插件总开关已关闭（AstrBot 插件配置里的「启用」）"})
-        if self.p.old_sense_active():
-            issues.append({"level": "error",
-                           "text": "旧的 GroupSense 插件仍在运行，群聊感知暂不接管。请到 AstrBot 插件页停用或卸载它。"})
-        try:
-            if self.p.sense.enabled:
-                issues += [{"level": "warn", "text": text} for text in self.p.sense.conflicts()]
-        except Exception:
-            pass
+        legacy = self.p.settings.data.get("legacy_sense") or {}
+        if legacy.get("enable", True) and (legacy.get("enabled_groups") or legacy.get("scope") == "all") \
+                and not self._sense_plugin_active():
+            issues.append({"level": "info", "text":
+                           "群聊感知从 3.0 起拆成了独立插件「群聊感知 GroupSense」。你之前开着它，"
+                           "装上新插件后会自动导入原来的设置和群聊记录。"})
         personas = set(self._personas())
         platforms = {p["id"] for p in self._platforms()}
         for profile in self.p.settings.data["profiles"]:
@@ -175,6 +166,19 @@ class WebApi:
         if not self.p.settings.data["profiles"]:
             issues.append({"level": "info", "text": "还没有人格记忆档案。到「路由」页添加后才会记录和注入记忆。"})
         return issues
+
+    def _sense_plugin_active(self) -> bool:
+        return self._sense_plugin_info()["active"]
+
+    def _sense_plugin_info(self) -> dict:
+        """群聊感知插件是否在运行、什么版本。"""
+        try:
+            meta = self.p.context.get_registered_star(SENSE_PLUGIN)
+        except Exception:
+            meta = None
+        if not (meta and getattr(meta, "activated", False)):
+            return {"active": False, "version": ""}
+        return {"active": True, "version": str(getattr(meta, "version", "") or "")}
 
     def _engine(self, profile_id: str):
         engine = self.p.router.engine_by_profile_id(str(profile_id or ""))
@@ -224,7 +228,6 @@ class WebApi:
             "providers": self._providers(),
             "profiles": self._profiles(),
             "log_categories": CATEGORY_LABELS,
-            "override_keys": list(GROUP_OVERRIDE_KEYS),
             "context_modes": list(CONTEXT_MODES),
             "migration": read_report(self.p.data_dir),
         }
@@ -232,7 +235,6 @@ class WebApi:
     @_api
     async def overview(self):
         pools = await self.p.ctx_store.list_pools()
-        groups = await self.p.sense.panel_groups()
         engines = []
         for profile in self._profiles():
             stats = None
@@ -243,23 +245,28 @@ class WebApi:
                     stats = None
             engines.append({"id": profile["id"], "name": profile["name"],
                             "platform_id": profile["platform_id"], "persona": profile["personas_name"],
+                            "bot_self_id": profile["bot_self_id"], "enabled": profile["enabled"],
+                            "groups": len(profile["apply_to_group_chat"]),
+                            "private": profile["enable_private_chat"],
                             "active": profile["active"], "error": profile["error"],
-                            "context_mode": profile["context"]["mode"], "stats": stats})
+                            "context_mode": profile["context"]["mode"],
+                            "context_pool": profile["context"]["pool"], "stats": stats})
         return {
+            "enabled": self.p.enabled,
             "health": self._health(),
             "profiles": engines,
-            "groups": groups,
-            "pools": pools,
+            "pools": sorted(({**item, **self._pool_label(item["pool"]), "users": self._pool_users(item["pool"])}
+                             for item in pools), key=lambda x: -x["last_ts"]),
             "sessions": len(self.p.sessions.sessions),
-            "sense_enabled": self.p.sense.enabled and not self.p.old_sense_active(),
-            "recent": self.p.bus.recent(30, ("judge", "notice", "memory", "context", "settings", "error")),
+            "groupsense": self._sense_plugin_info(),
+            "recent": self.p.bus.recent(30, ("memory", "context", "settings", "error")),
         }
 
     @_api
     async def settings_save(self):
         body = await request.json(default={})
         data = self.p.settings.snapshot()
-        for section in ("memory", "sense", "context", "logs"):
+        for section in ("memory", "context", "logs"):
             if isinstance(body.get(section), dict):
                 data[section].update(body[section])
         await self.p.apply_settings(data, "面板修改设置")
@@ -341,7 +348,6 @@ class WebApi:
                     reason = "档案只对指定的群生效，这个群不在名单里" if group_id else "档案没有打开「私聊也生效」"
                 steps.append(reason + "，所以不记录也不注入")
         binding = resolve_binding(profile, group_id, user_id, umo) if (profile and in_scope) else None
-        managed = bool(group_id) and self.p.sense.enabled and self.p.sense.is_managed_key(platform_id, group_id)
         session_key = session_key_of(group_id, user_id)
         override = ((profile or {}).get("context", {}).get("sessions") or {}).get(session_key)
         return {
@@ -352,7 +358,6 @@ class WebApi:
             "context_mode": binding.mode if binding else "astrbot",
             "context_pool": binding.pool if binding else "",
             "context_override": bool(override),
-            "managed": managed,
             "reason": reason,
             "steps": steps,
         }
@@ -560,69 +565,6 @@ class WebApi:
             raise ValueError("没有压缩：记忆不足两条，或模型没有返回有效结果（见日志）")
         return {"ok": True}
 
-    # ================= 群聊感知 =================
-
-    @_api
-    async def sense_groups(self):
-        return {"groups": await self.p.sense.panel_groups()}
-
-    @_api
-    async def sense_records(self):
-        q = request.query
-        key = str(q.get("key", ""))
-        return {"items": await self.p.sense.panel_records(
-            key, _int(q.get("before")), min(_int(q.get("limit"), 60), 300)),
-            "state": self.p.sense.mute_state(key)}
-
-    @_api
-    async def sense_members(self):
-        return {"items": await self.p.sense.panel_members(str(request.query.get("key", "")))}
-
-    @_api
-    async def sense_thumb(self):
-        return {"url": await self.p.sense.panel_thumbnail(str(request.query.get("md5", "")))}
-
-    @_api
-    async def sense_toggle(self):
-        """打开或关闭某个群的群聊感知。"""
-        body = await request.json(default={})
-        platform_id, group_id = str(body.get("platform_id") or ""), str(body.get("group_id") or "")
-        if not group_id:
-            raise ValueError("缺少群号")
-        on = bool(body.get("managed"))
-        data = self.p.settings.snapshot()
-        sense = data["sense"]
-        keys = {group_id, f"{platform_id}:{group_id}"}
-        entry = f"{platform_id}:{group_id}" if platform_id else group_id
-        if sense["scope"] == "all":
-            sense["excluded_groups"] = [g for g in sense["excluded_groups"] if g not in keys]
-            if not on:
-                sense["excluded_groups"].append(entry)
-        else:
-            sense["enabled_groups"] = [g for g in sense["enabled_groups"] if g not in keys]
-            if on:
-                sense["enabled_groups"].append(entry)
-        await self.p.apply_settings(data, f"群 {group_id} 群聊感知{'开启' if on else '关闭'}")
-        return {"ok": True}
-
-    @_api
-    async def sense_override(self):
-        body = await request.json(default={})
-        key = str(body.get("key") or "")
-        if not key:
-            raise ValueError("缺少群")
-        values = body.get("values") if isinstance(body.get("values"), dict) else {}
-        data = self.p.settings.snapshot()
-        data["sense"]["group_overrides"][key] = {
-            k: v for k, v in values.items() if k in GROUP_OVERRIDE_KEYS and v not in (None, "")}
-        await self.p.apply_settings(data, f"群 {key} 单独设置")
-        return {"ok": True}
-
-    @_api
-    async def sense_clear(self):
-        body = await request.json(default={})
-        return {"removed": await self.p.sense.store.clear_group(str(body.get("key") or ""))}
-
     # ================= 上下文库 =================
 
     def _pool_label(self, pool: str) -> dict:
@@ -828,7 +770,7 @@ class WebApi:
     @_api
     async def ctx_export(self):
         pool = str(request.query.get("pool", ""))
-        turns = await self.p.ctx_store.list_turns(pool, limit=500)
+        turns = await self.p.ctx_store.list_turns(pool, limit=None)
         path = self.p.data_dir / "tmp" / f"context-{int(time.time())}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"pool": pool, "turns": [t.to_dict() for t in turns]},

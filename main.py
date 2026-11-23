@@ -1,6 +1,7 @@
-"""PersonaFlow 2：人格记忆 + 群聊感知 + 独立上下文库，带管理面板。
+"""PersonaFlow 3：人格记忆 + 档案路由 + 独立上下文库，带管理面板。
 
-这个文件只负责向 AstrBot 注册钩子、指令、工具和 Web API，并把调用转发给 pf/ 下的模块。
+这个文件只负责向 AstrBot 注册钩子、指令和 Web API，并把调用转发给 pf/ 下的模块。
+群聊感知从 3.0 起是独立的 GroupSense 插件，两者通过事件 extra 配合（见 pf/keys.py）。
 """
 
 from __future__ import annotations
@@ -15,22 +16,17 @@ from astrbot.api.star import Context, Star
 
 from .pf.context.service import ContextService, resolve_binding
 from .pf.context.store import ContextStore
+from .pf.keys import GS_WINDOW_KEY
 from .pf.logbus import LogBus
 from .pf.memory.core import MemoryRouter
-from .pf.migrate import (
-    OLD_SENSE_NAME,
-    import_sense_data,
-    read_old_sense_config,
-    settings_from_old,
-    write_report,
-)
+from .pf.migrate import settings_from_old, write_report
 from .pf.paths import PLUGIN_NAME, VERSION, get_data_dir
-from .pf.sense.members import role_label
-from .pf.sense.service import SenseService
 from .pf.sessions import SessionRegistry
 from .pf.settings import SettingsStore
 from .pf.web.api import WebApi
 
+# 群聊记录里的群身份
+ROLE_LABELS = {"owner": "群主", "admin": "管理员"}
 
 
 class PersonaFlow(Star):
@@ -47,7 +43,7 @@ class PersonaFlow(Star):
         self.settings = SettingsStore(self.data_dir / "settings.json", self.data_dir)
         self._fresh_install = not self.settings.exists()
         if self._fresh_install:
-            data, notes = settings_from_old(dict(self.config), read_old_sense_config(), self.data_dir)
+            data, notes = settings_from_old(dict(self.config), self.data_dir)
             self.settings.replace(data)
             self._migration_notes = notes
         else:
@@ -62,12 +58,6 @@ class PersonaFlow(Star):
             logger.error(f"[PersonaFlow] 人格记忆档案无效，暂不启用任何档案: {e}")
             self.router = MemoryRouter(context, {"disable_legacy": True, "memory_profiles": []})
         self.router.attach_bus(self.bus)
-        self.sense = SenseService(
-            context,
-            self._sense_config(),
-            impression_source=self.get_impressions,
-            bus=self.bus,
-        )
         self.ctx_store = ContextStore(self.data_dir / "context.db")
         self.ctx = ContextService(self.ctx_store, self.bus)
         self.ctx.configure(self.settings.data["context"])
@@ -76,11 +66,6 @@ class PersonaFlow(Star):
         self._ready = False
         self._flush_task: asyncio.Task | None = None
         self._apply_lock = asyncio.Lock()
-
-    def _sense_config(self) -> dict:
-        config = self.settings.sense_config()
-        config["enable"] = bool(config.get("enable", True)) and self.enabled
-        return config
 
     # ================= 生命周期 =================
 
@@ -91,23 +76,14 @@ class PersonaFlow(Star):
                 logger.debug("[PersonaFlow] 没找到 AstrBot 的日志代理，日志页只显示结构化事件")
         except Exception:
             pass
-        if self._fresh_install:
-            note = await import_sense_data(self.data_dir)
-            if note:
-                self._migration_notes.append(note)
-            if self._migration_notes:
-                write_report(self.data_dir, self._migration_notes)
-                for note in self._migration_notes:
-                    logger.info(f"[PersonaFlow] 迁移：{note}")
-        await self.sense.initialize()
+        if self._fresh_install and self._migration_notes:
+            write_report(self.data_dir, self._migration_notes)
+            for note in self._migration_notes:
+                logger.info(f"[PersonaFlow] 迁移：{note}")
         await self.ctx_store.open()
         self.web.register(self.context)
         self._flush_task = asyncio.create_task(self._flush_loop())
         self._ready = True
-        if self.old_sense_active():
-            logger.warning(
-                "[PersonaFlow] 旧的 GroupSense 插件仍在运行，群聊感知暂不接管。请停用或卸载它。"
-            )
         self.bus.event("settings", f"PersonaFlow {VERSION} 已启动",
                        profiles=len(self.router.engines()))
 
@@ -115,7 +91,7 @@ class PersonaFlow(Star):
         self._ready = False
         if self._flush_task:
             self._flush_task.cancel()
-        for closer in (self.sense.terminate, self.router.terminate, self.ctx_store.close):
+        for closer in (self.router.terminate, self.ctx_store.close):
             try:
                 await closer()
             except Exception as e:
@@ -128,14 +104,6 @@ class PersonaFlow(Star):
             await asyncio.sleep(30)
             self.sessions.save()
 
-    def old_sense_active(self) -> bool:
-        """旧的独立 GroupSense 插件是否还在运行（会和内置的群聊感知重复接管）。"""
-        try:
-            meta = self.context.get_registered_star(OLD_SENSE_NAME)
-            return bool(meta and getattr(meta, "activated", False))
-        except Exception:
-            return False
-
     async def apply_settings(self, raw: dict, reason: str = "") -> dict:
         """保存一份新设置并让各模块立即生效。"""
         async with self._apply_lock:
@@ -145,7 +113,6 @@ class PersonaFlow(Star):
             except ValueError as e:
                 logger.error(f"[PersonaFlow] 应用档案失败: {e}")
             self.router.attach_bus(self.bus)
-            self.sense.apply_config(self._sense_config())
             self.ctx.configure(self.settings.data["context"])
             self.bus.configure(self.settings.data["logs"])
             self.bus.event("settings", f"设置已更新{('：' + reason) if reason else ''}")
@@ -176,12 +143,12 @@ class PersonaFlow(Star):
         sender_name = str(event.get_sender_name() or "") or sender_id
         platform_id = str(event.get_platform_id())
         if group_id:
-            key = f"{platform_id}:{group_id}"
             item = self.sessions.sessions.get(f"{platform_id}:group:{group_id}") or {}
-            name = self.sense.group_name_cached(key) or item.get("name") or group_id
+            group = getattr(event.message_obj, "group", None)
+            name = str(getattr(group, "group_name", "") or "") or item.get("name") or group_id
             raw = getattr(event.message_obj, "raw_message", None)
             sender = raw.get("sender") if isinstance(raw, dict) and isinstance(raw.get("sender"), dict) else {}
-            tag = role_label(str(sender.get("role") or ""))
+            tag = ROLE_LABELS.get(str(sender.get("role") or ""), "")
             label = f"【群「{name}」】{sender_name}({sender_id}){f'[{tag}]' if tag else ''}："
             return {"type": "group", "id": group_id, "name": name, "platform_id": platform_id,
                     "sender_id": sender_id, "sender_name": sender_name, "label": label}
@@ -191,23 +158,17 @@ class PersonaFlow(Star):
 
     # ================= 消息入口 =================
 
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    # 排在最前：群聊感知插件可能会在自己的处理里结束事件，登记要赶在那之前
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=sys.maxsize)
     async def on_group_message(self, event: AstrMessageEvent):
-        """记录群消息和群事件，并交给判断模型决定是否由主模型回复（含被 @ 的消息）。"""
+        """登记群会话，供面板配置路由时选择。"""
         if not self._ready:
             return
         raw = event.message_obj.raw_message
-        if not (isinstance(raw, dict) and raw.get("post_type", "message") != "message"):
+        if isinstance(raw, dict) and raw.get("post_type", "message") != "message":
+            return  # 群事件（戳一戳、禁言等）不算会话活动
+        if event.get_messages():
             self.sessions.touch(event)
-        if self.old_sense_active():
-            return
-        gen = self.sense.on_group_message(event)
-        try:
-            async for result in gen:
-                yield result
-        finally:
-            await gen.aclose()
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def on_private_message(self, event: AstrMessageEvent):
@@ -272,24 +233,29 @@ class PersonaFlow(Star):
 
     @filter.on_llm_request(priority=-100)
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
-        """上下文库接管对话历史，然后给受管群注入群聊记录。"""
-        if not self._ready:
+        """上下文库接管对话历史。
+
+        群聊感知插件在 -90 标出受管群和群聊记录的起点，这里据此跳过已经在群聊记录里的本群轮次；
+        它在 -110 注入群聊记录时会看到这里留下的接管标记。
+        """
+        if not (self._ready and self.enabled):
             return
-        sense_on = not self.old_sense_active()
-        managed = sense_on and self.sense.is_managed(event)
-        if self.enabled:
-            profile = self.profile_of(req)
-            if profile is not None:
-                since = await self.sense.window_start_ts(event) if managed else None
-                await self.ctx.before_request(
-                    event, req, profile,
-                    source=self.source_of(event),
-                    managed=managed,
-                    managed_since=since,
-                    keep_same_group_turns=self.sense.main_keep_history_turns,
-                )
-        if sense_on:
-            await self.sense.on_llm_request(event, req)
+        profile = self.profile_of(req)
+        if profile is None:
+            return
+        window = event.get_extra(GS_WINDOW_KEY)
+        managed = isinstance(window, dict) and bool(window.get("managed"))
+        try:
+            keep = int(window.get("keep_turns") or 0) if managed else 0
+        except (TypeError, ValueError):
+            keep = 0
+        await self.ctx.before_request(
+            event, req, profile,
+            source=self.source_of(event),
+            managed=managed,
+            managed_since=window.get("since") if managed else None,
+            keep_same_group_turns=keep,
+        )
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
@@ -306,47 +272,6 @@ class PersonaFlow(Star):
     async def on_agent_done(self, event: AstrMessageEvent, run_context, resp: LLMResponse):
         if self._ready:
             await self.ctx.on_agent_done(event, run_context, resp)
-
-    @filter.on_decorating_result()
-    async def on_decorating_result(self, event: AstrMessageEvent):
-        """清理模仿记录格式的前缀和重复的文字 @，挂上工具暂存的引用 / @。"""
-        if self._ready and not self.old_sense_active():
-            await self.sense.on_decorating_result(event)
-
-    @filter.after_message_sent()
-    async def after_message_sent(self, event: AstrMessageEvent):
-        """把机器人自己发出的消息记进群聊记录。"""
-        if self._ready and not self.old_sense_active():
-            await self.sense.after_message_sent(event)
-
-    # ================= 给主 LLM 的工具 =================
-
-    @filter.llm_tool(name="quote_message")
-    async def quote_message(self, event: AstrMessageEvent, message_ref: str = ""):
-        """让你接下来发到群里的回复引用（回复）群聊记录里的某条消息。只在需要明确指向某条消息时使用，调用后直接写回复内容即可。
-
-        Args:
-            message_ref(string): 群聊记录中的消息编号，例如 "#123"
-        """
-        return await self.sense.quote_message(event, message_ref)
-
-    @filter.llm_tool(name="mention_user")
-    async def mention_user(self, event: AstrMessageEvent, user_id: str = ""):
-        """让你接下来发到群里的回复开头 @ 一位群成员。只在需要点名对方时使用，调用后直接写回复内容即可。
-
-        Args:
-            user_id(string): 要 @ 的群成员 QQ 号（群聊记录里名字后面的数字）
-        """
-        return await self.sense.mention_user(event, user_id)
-
-    @filter.llm_tool(name="poke_user")
-    async def poke_user(self, event: AstrMessageEvent, user_id: str = ""):
-        """戳一戳群里的某位成员（QQ 的「戳一戳」互动动作）。只在你想用这个动作回应对方时使用，例如对方戳了你；不要频繁使用。
-
-        Args:
-            user_id(string): 要戳的群成员 QQ 号（群聊记录里名字后面的数字）
-        """
-        return await self.sense.poke_user(event, user_id)
 
     # ================= 指令 =================
 
@@ -382,13 +307,6 @@ class PersonaFlow(Star):
     async def check_profile(self, event: AstrMessageEvent):
         """查看当前 Bot、人格、记忆库和生效范围"""
         async for result in self.router.check_profile(event):
-            yield result
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("gs")
-    async def gs_status(self, event: AstrMessageEvent, action: str = ""):
-        """查看群聊感知的接管状态；/gs clear 清除本群聊天记录"""
-        async for result in self.sense.gs_status(event, action):
             yield result
 
     @filter.command("ctx")

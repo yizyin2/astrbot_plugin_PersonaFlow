@@ -3,7 +3,7 @@
         "description": "启用 PersonaFlow",
         "type": "bool",
         "default": true,
-        "hint": "总开关。其余设置（档案路由、群聊感知、独立上下文库、日志）都在插件详情页的「管理面板」里修改，保存即生效。",
+        "hint": "总开关。其余设置（档案路由、人格记忆、独立上下文库、日志）都在插件详情页的「管理面板」里修改，保存即生效。群聊感知已拆成独立的 GroupSense 插件。",
         "obvious_hint": true
     },
     "memory_profiles": {

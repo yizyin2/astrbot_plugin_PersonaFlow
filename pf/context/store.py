@@ -216,8 +216,9 @@ class ContextStore:
         return [{"umo": r[0], "type": r[1], "id": r[2], "name": r[3] or "", "turns": int(r[4])}
                 for r in rows]
 
-    async def list_turns(self, pool: str, *, before_id: int | None = None, limit: int = 50,
+    async def list_turns(self, pool: str, *, before_id: int | None = None, limit: int | None = 50,
                          source_umo: str = "", q: str = "") -> list[Turn]:
+        """按时间正序返回最近的若干轮；limit 为 None 时返回全部（导出用）。"""
         sql, params = f"SELECT {_COLS} FROM turns WHERE pool=?", [pool]
         if before_id:
             sql += " AND id<?"
@@ -228,8 +229,10 @@ class ContextStore:
         if q:
             sql += " AND (user_text LIKE ? OR assistant_text LIKE ? OR sender_name LIKE ?)"
             params += [f"%{q}%"] * 3
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(max(1, min(int(limit), 500)))
+        sql += " ORDER BY id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(1, int(limit)))
         async with self._lock:
             cur = await self.db.execute(sql, params)
             rows = await cur.fetchall()

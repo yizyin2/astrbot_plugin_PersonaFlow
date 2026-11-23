@@ -108,3 +108,66 @@ export const tag = (text, kind = "") => h("span", { class: "tag " + kind }, text
 export const select = (options, value, onchange, attrs = {}) =>
   h("select", { ...attrs, onchange: (e) => onchange && onchange(e.target.value) },
     options.map(([v, label]) => h("option", { value: v, selected: String(v) === String(value) }, label)));
+
+// ---------- 未保存的修改 ----------
+// 有表单的页面在 guard.current 登记 { isDirty, save }；切换页面、刷新页面前先问一声。
+export const guard = { current: null };
+
+// 返回 "save"（保存并离开）、"discard"（不保存）或 null（留在这里）
+export function leaveBox() {
+  return new Promise((resolve) => {
+    const close = (value) => { mask.remove(); document.removeEventListener("keydown", onKey); resolve(value); };
+    const onKey = (e) => { if (e.key === "Escape") close(null); };
+    const mask = h("div", { class: "mask", onmousedown: (e) => { if (e.target === mask) close(null); } },
+      h("div", { class: "modal" },
+        h("h3", null, "修改还没保存"),
+        h("p", null, "这一页改过的设置还没有保存，离开后这些修改会丢失。"),
+        h("div", { class: "foot" },
+          h("button", { onclick: () => close(null) }, "留在这里"),
+          h("button", { class: "danger", onclick: () => close("discard") }, "不保存"),
+          h("button", { class: "primary", onclick: () => close("save") }, "保存并离开"))));
+    document.addEventListener("keydown", onKey);
+    document.getElementById("modal-root").append(mask);
+  });
+}
+
+// 可以离开当前页面时返回 true（没有修改、选了不保存，或者保存成功）
+export async function canLeave() {
+  const current = guard.current;
+  if (!current || !current.isDirty()) return true;
+  const choice = await leaveBox();
+  if (choice === "save" && await current.save()) { guard.current = null; return true; }
+  if (choice === "discard") { guard.current = null; return true; }
+  return false;
+}
+
+// 表单底部的保存栏：有修改时变成醒目的提示条并标出改过的项，同时登记离开前的提醒。
+// root 里带 data-key 的元素会在对应的值改过时加上 changed 样式。
+export function saveBar({ root, draft, onSave, onDone, idleText = "保存后立即生效，不需要重载插件。", normalize = (d) => d }) {
+  const snap = (d) => JSON.parse(JSON.stringify(normalize(d)));
+  const original = snap(draft);
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const isDirty = () => !same(snap(draft), original);
+  const state = h("span", { class: "state" }, idleText);
+  const save = async () => {
+    saveBtn.disabled = true;
+    const ok = !!(await onSave());
+    saveBtn.disabled = false;
+    return ok;
+  };
+  const saveBtn = h("button", { class: "primary", onclick: async () => { if (await save()) { guard.current = null; onDone(); } } }, "保存");
+  const undo = h("button", { class: "link", hidden: true, onclick: () => { guard.current = null; onDone(); } }, "撤销修改");
+  const bar = h("div", { class: "savebar" }, saveBtn, state, undo);
+  const update = () => {
+    const now = snap(draft);
+    const dirty = !same(now, original);
+    bar.classList.toggle("dirty", dirty);
+    state.textContent = dirty ? "有修改还没保存" : idleText;
+    undo.hidden = !dirty;
+    root.querySelectorAll("[data-key]").forEach((el) => el.classList.toggle("changed", !same(now[el.dataset.key], original[el.dataset.key])));
+  };
+  root.addEventListener("input", update);
+  root.addEventListener("change", update);
+  guard.current = { isDirty, save };
+  return bar;
+}
