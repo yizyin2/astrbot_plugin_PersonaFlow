@@ -8,7 +8,7 @@ from pathlib import Path
 from astrbot.api.star import StarTools
 
 PLUGIN_NAME = "astrbot_plugin_PersonaFlow"
-VERSION = "3.0.3"
+VERSION = "3.1.6"
 
 
 def get_data_dir() -> Path:

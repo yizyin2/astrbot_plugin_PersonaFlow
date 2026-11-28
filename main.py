@@ -16,6 +16,8 @@ from astrbot.api.star import Context, Star
 
 from .pf.context.service import ContextService, resolve_binding
 from .pf.context.store import ContextStore
+from .pf.drh.service import DrhService
+from .pf.drh.store import DrhStore
 from .pf.keys import GS_WINDOW_KEY
 from .pf.logbus import LogBus
 from .pf.memory.core import MemoryRouter
@@ -62,6 +64,8 @@ class PersonaFlow(Star):
         self.ctx = ContextService(self.ctx_store, self.bus)
         self.ctx.configure(self.settings.data["context"])
         self.sessions = SessionRegistry(self.data_dir / "sessions.json")
+        self.drh_store = DrhStore(self.data_dir / "drh.db")
+        self.drh = DrhService(self, self.drh_store)
         self.web = WebApi(self)
         self._ready = False
         self._flush_task: asyncio.Task | None = None
@@ -81,6 +85,7 @@ class PersonaFlow(Star):
             for note in self._migration_notes:
                 logger.info(f"[PersonaFlow] 迁移：{note}")
         await self.ctx_store.open()
+        await self.drh_store.open()
         self.web.register(self.context)
         self._flush_task = asyncio.create_task(self._flush_loop())
         self._ready = True
@@ -91,7 +96,7 @@ class PersonaFlow(Star):
         self._ready = False
         if self._flush_task:
             self._flush_task.cancel()
-        for closer in (self.router.terminate, self.ctx_store.close):
+        for closer in (self.router.terminate, self.ctx_store.close, self.drh_store.close):
             try:
                 await closer()
             except Exception as e:
@@ -170,6 +175,17 @@ class PersonaFlow(Star):
         if event.get_messages():
             self.sessions.touch(event)
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=sys.maxsize)
+    async def on_session_message(self, event: AstrMessageEvent):
+        """会话里来了新消息（/drh 本身除外），之前的 /drh 删除就不能再撤销。"""
+        if not self._ready:
+            return
+        raw = event.message_obj.raw_message
+        if isinstance(raw, dict) and raw.get("post_type", "message") != "message":
+            return  # 群事件（戳一戳、禁言等）不算新消息
+        if event.get_messages():
+            await self.drh.on_message(event)
+
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def on_private_message(self, event: AstrMessageEvent):
         """登记私聊会话，供面板配置路由时选择。"""
@@ -203,6 +219,13 @@ class PersonaFlow(Star):
         if (binding.mode == "shared" or event.get_group_id()) and not event.is_admin():
             if not quiet:
                 await event.send(event.plain_result("❌ 仅 AstrBot 管理员可以重置这份上下文。"))
+            else:
+                # 内置的 /new、/reset 已经照常执行，这里说明上下文库并没有跟着断开
+                where = ("由共享上下文库接管，和其他群聊、私聊共用" if binding.mode == "shared"
+                         else "由上下文库接管，群里所有人共用")
+                await event.send(event.plain_result(
+                    f"⚠️ 当前会话的对话历史{where}，只有 AstrBot 管理员可以重置。"
+                    f"这次 {reason} 没有清掉它，之前的对话仍会带给模型。"))
             return
         who = f"{event.get_sender_name()}({event.get_sender_id()})"
         await self.ctx.reset(binding.pool, f"{reason} by {who}")
@@ -272,6 +295,14 @@ class PersonaFlow(Star):
     async def on_agent_done(self, event: AstrMessageEvent, run_context, resp: LLMResponse):
         if self._ready:
             await self.ctx.on_agent_done(event, run_context, resp)
+            if self.enabled:
+                await self.drh.record(event, resp)
+
+    @filter.after_message_sent()
+    async def after_message_sent(self, event: AstrMessageEvent):
+        """回复发完后记下时间，/drh 撤回 QQ 消息时按它找。"""
+        if self._ready:
+            await self.drh.on_sent(event)
 
     # ================= 指令 =================
 
@@ -308,6 +339,13 @@ class PersonaFlow(Star):
         """查看当前 Bot、人格、记忆库和生效范围"""
         async for result in self.router.check_profile(event):
             yield result
+
+    @filter.command("drh")
+    async def drh_command(self, event: AstrMessageEvent, arg: str = "1"):
+        """删除当前对话最近 N 轮（同步删除记忆库记录、撤回 QQ 回复）；/drh undo 撤销上一次删除"""
+        if not self._ready:
+            return
+        yield event.plain_result(await self.drh.handle(event, arg))
 
     @filter.command("ctx")
     async def ctx_command(self, event: AstrMessageEvent, action: str = ""):

@@ -44,7 +44,11 @@ FIELDS: list[dict] = [
     _f("context", "strip_images", "bool", True, "图片不存入上下文库", "存成「[图片]」占位文字，避免库体积暴涨。"),
     _f("context", "source_prefix", "bool", True, "给消息标注来源", "共享池里，消息前加上「【私聊】昵称(QQ)：」这样的来源。群聊感知接管的群已经有完整的群聊记录，不再另加。"),
     _f("context", "guard_prompt", "bool", True, "提醒模型区分场合", "共享池时在系统提示词末尾加一句：历史来自多个场合，不要把私聊内容主动说到群里。"),
-    _f("context", "sync_builtin_reset", "bool", True, "/reset、/new 同步打断点", "接管的会话里使用内置重置指令时，在上下文库里打一个断点。"),
+    _f("context", "sync_builtin_reset", "bool", True, "/reset、/new 同步打断点", "接管的会话里使用内置重置指令时，在上下文库里打一个断点。共享上下文和群里的上下文只有 AstrBot 管理员能重置，其他人用时只回一句提示。"),
+    # ---- 删除最近对话（/drh） ----
+    _f("drh", "recall_qq", "bool", True, "/drh 删除时在 QQ 上撤回机器人的回复",
+       "只对 QQ（aiocqhttp）有效。QQ 一般只允许撤回 2 分钟内的消息，太早的会撤回失败；撤回的消息不能用 /drh undo 恢复。"),
+    _f("drh", "undo_depth", "int", 10, "每个会话可以连续撤销几次 /drh", "/drh undo 每次恢复最近一次删除，超过这个次数的更早删除不再能恢复。会话收到新消息后，之前的删除都不能再撤销。", rec="5～20 次", min=1),
     # ---- 日志 ----
     _f("logs", "level", "select", "INFO", "记录级别",
        options=[["DEBUG", "DEBUG"], ["INFO", "INFO"], ["WARNING", "WARNING"], ["ERROR", "ERROR"]]),
@@ -53,7 +57,7 @@ FIELDS: list[dict] = [
     _f("logs", "save_prompts", "bool", False, "调试模式：保存完整提示词", "会让日志库明显变大，排查问题时再打开。"),
 ]
 
-SECTION_LABELS = {"memory": "人格记忆", "context": "独立上下文库", "logs": "日志"}
+SECTION_LABELS = {"memory": "人格记忆", "context": "独立上下文库", "drh": "删除最近对话", "logs": "日志"}
 
 
 def _coerce(field: dict, value):

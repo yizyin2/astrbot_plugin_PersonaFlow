@@ -8,3 +8,7 @@ CTX_INFO_KEY = "_pf_ctx"
 #   {"managed": True, "since": 主模型能看到的群聊记录里最早一条的时间或 None, "keep_turns": 本群保留的对话轮数}
 # 它在 on_llm_request 优先级 -90 写入，上下文库在 -100 读取，据此跳过已经在群聊记录里的本群轮次
 GS_WINDOW_KEY = "_groupsense_window"
+# 记忆库写入：这一轮回复存进了哪个档案的 Message 表第几行，{"profile_id": ..., "row": ...}
+MEMORY_ROW_KEY = "_pf_memory_row"
+# /drh 轮次账里这一轮的行 ID，消息发完后据此记下发送时间
+ROUND_KEY = "_pf_round"

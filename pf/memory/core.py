@@ -20,6 +20,9 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, StarTools
 
+# 与 pf/keys.py 的 MEMORY_ROW_KEY 相同。本文件不能相对导入，只好写两遍
+MEMORY_ROW_KEY = "_pf_memory_row"
+
 
 class _PersonaMemory:
     """Own one database, configuration snapshot, and independent operation locks."""
@@ -667,10 +670,11 @@ class _PersonaMemory:
                 db = await self._get_db()
                 async with self._db_lock:
                     try:
-                        await db.execute(
+                        cursor = await db.execute(
                             "INSERT INTO Message (qq_number, message) VALUES (?, ?)",
                             (qq_number, message),
                         )
+                        message_row = cursor.lastrowid
                         await db.execute(
                             """
                             INSERT INTO Impression (qq_number, name, dialogue_count)
@@ -699,6 +703,14 @@ class _PersonaMemory:
                 logger.error(f"处理用户数据失败: {e}", exc_info=True)
                 self._emit(f"保存对话失败：{e}", level="ERROR")
                 return
+
+            # 记下这一轮在 Message 表里的行，/drh 删除这一轮时同步删掉它
+            set_extra = getattr(event, "set_extra", None)
+            if callable(set_extra):
+                set_extra(MEMORY_ROW_KEY, {
+                    "profile_id": str(self.config.get("profile_id") or ""),
+                    "row": int(message_row or 0),
+                })
 
             self._emit(
                 f"记录对话：{new_name}({qq_number})",
@@ -1562,6 +1574,107 @@ class _PersonaMemory:
                 await db.rollback()
                 raise
         return int(removed or 0)
+
+    async def pop_messages(self, message_ids: list[int]) -> list[dict]:
+        """删除指定的对话记录，返回删掉的原始行，供 /drh undo 放回。
+
+        Args:
+            message_ids: The records to delete.
+
+        Returns:
+            The removed rows with id, qq_number, message and chat_time.
+        """
+        ids = sorted({int(i) for i in message_ids if int(i) > 0})
+        if not ids:
+            return []
+        db = await self._get_db()
+        placeholders = ",".join("?" for _ in ids)
+        async with self._db_lock:
+            try:
+                async with db.execute(
+                    f"SELECT id, qq_number, message, chat_time FROM Message WHERE id IN ({placeholders})",
+                    tuple(ids),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                await db.execute(
+                    f"DELETE FROM Message WHERE id IN ({placeholders})", tuple(ids)
+                )
+                await db.commit()
+            except (Exception, asyncio.CancelledError):
+                await db.rollback()
+                raise
+        return [
+            {"id": r[0], "qq_number": str(r[1]), "message": r[2] or "", "chat_time": str(r[3] or "")}
+            for r in rows
+        ]
+
+    async def restore_messages(self, rows: list[dict]) -> int:
+        """按原 ID 放回 pop_messages 删掉的对话记录；ID 已被占用的跳过。
+
+        Args:
+            rows: Rows returned by ``pop_messages``.
+
+        Returns:
+            How many records were put back.
+        """
+        if not rows:
+            return 0
+        db = await self._get_db()
+        restored = 0
+        async with self._db_lock:
+            try:
+                for r in rows:
+                    async with db.execute(
+                        "INSERT OR IGNORE INTO Message (id, qq_number, message, chat_time) "
+                        "VALUES (?, ?, ?, ?)",
+                        (int(r["id"]), str(r["qq_number"]), r.get("message") or "",
+                         r.get("chat_time") or None),
+                    ) as cursor:
+                        restored += int(cursor.rowcount or 0)
+                await db.commit()
+            except (Exception, asyncio.CancelledError):
+                await db.rollback()
+                raise
+        return restored
+
+    def reply_matches(self, message: str, reply: str) -> bool:
+        """这条对话记录是不是以这段回复结尾（格式见 merge_AI_and_user_message）。"""
+        reply = (reply or "").strip()
+        message = (message or "").strip()
+        if not reply or not message.endswith('"'):
+            return False
+        body = message[:-1].rstrip()
+        if not body.endswith(reply):
+            return False
+        persona = self.config.get("personas_name", "AI助手")
+        return body[: len(body) - len(reply)].rstrip().endswith(f'{persona}: "')
+
+    async def find_message_ids(
+        self, replies: list[str], qq_number: str = "", scan: int = 200
+    ) -> list[int]:
+        """在最近的对话记录里按回复原文找对应的行，每段回复最多对应一行。
+
+        没有轮次账可查时（/drh 上线前的对话）用这个兜底。
+
+        Args:
+            replies: Assistant replies of the rounds being deleted.
+            qq_number: Only search this user's records when given.
+            scan: How many recent records to look through.
+
+        Returns:
+            Matching record IDs.
+        """
+        replies = [r for r in replies if (r or "").strip()]
+        if not replies:
+            return []
+        rows, _ = await self.list_messages(qq_number, 0, scan)
+        found: list[int] = []
+        for reply in replies:
+            for row in rows:
+                if row["id"] not in found and self.reply_matches(row["message"], reply):
+                    found.append(row["id"])
+                    break
+        return found
 
     async def refresh_dynamic_persona(self) -> str:
         """Rebuild the stored dynamic persona after records changed.

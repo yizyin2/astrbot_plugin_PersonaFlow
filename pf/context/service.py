@@ -217,6 +217,7 @@ class ContextService:
                 source_name=source.get("name", ""), platform_id=source.get("platform_id", ""),
                 sender_id=source.get("sender_id", ""), sender_name=source.get("sender_name", ""))
             info["saved"] = True
+            info["turn_id"] = turn_id
             self._emit(f"保存一轮对话到池 {binding.pool}", level="DEBUG", session=umo,
                        pool=binding.pool, turn_id=turn_id, messages=len(dumped))
         except Exception as e:

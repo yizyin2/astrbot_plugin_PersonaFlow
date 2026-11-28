@@ -17,7 +17,13 @@ from ..context.service import resolve_binding, session_key_of
 from ..logbus import CATEGORY_LABELS
 from ..migrate import read_report
 from ..paths import PLUGIN_NAME, VERSION
-from ..settings import CONTEXT_MODES, fields_for_panel, normalize_profile, profile_db_path
+from ..settings import (
+    CONTEXT_MODES,
+    SECTION_LABELS,
+    fields_for_panel,
+    normalize_profile,
+    profile_db_path,
+)
 
 _BACKUP_INTERVAL_S = 600
 _BACKUP_KEEP = 5
@@ -266,7 +272,7 @@ class WebApi:
     async def settings_save(self):
         body = await request.json(default={})
         data = self.p.settings.snapshot()
-        for section in ("memory", "context", "logs"):
+        for section in SECTION_LABELS:
             if isinstance(body.get(section), dict):
                 data[section].update(body[section])
         await self.p.apply_settings(data, "面板修改设置")

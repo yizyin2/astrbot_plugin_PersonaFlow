@@ -264,6 +264,34 @@ class ContextStore:
             await self.db.commit()
         return True
 
+    async def session_turns(self, pool: str, umo: str, limit: int) -> list[Turn]:
+        """最新断点之后、来自这个会话的最近 limit 轮，新的在前。"""
+        after = await self.last_mark(pool)
+        async with self._lock:
+            cur = await self.db.execute(
+                f"SELECT {_COLS} FROM turns WHERE pool=? AND source_umo=? AND id>? "
+                "ORDER BY id DESC LIMIT ?", (pool, umo, after, max(1, int(limit))))
+            rows = await cur.fetchall()
+        return [_row(r) for r in rows]
+
+    async def restore_turns(self, turns: list[dict]) -> int:
+        """按原 ID 放回删掉的轮次（Turn.to_dict 的格式）。ID 已被占用的跳过。"""
+        if not turns:
+            return 0
+        restored = 0
+        async with self._lock:
+            for t in turns:
+                cur = await self.db.execute(
+                    f"INSERT OR IGNORE INTO turns ({_COLS}) VALUES ({','.join('?' * 13)})",
+                    (int(t["id"]), t["pool"], float(t["ts"]), t.get("source_umo", ""),
+                     t.get("source_type", ""), t.get("source_id", ""), t.get("source_name", ""),
+                     t.get("platform_id", ""), t.get("sender_id", ""), t.get("sender_name", ""),
+                     t.get("user_text", ""), t.get("assistant_text", ""),
+                     json.dumps(t.get("messages") or [], ensure_ascii=False)))
+                restored += int(cur.rowcount or 0)
+            await self.db.commit()
+        return restored
+
     async def delete_turns(self, turn_ids: list[int]) -> int:
         if not turn_ids:
             return 0
